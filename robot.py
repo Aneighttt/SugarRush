@@ -2,9 +2,20 @@ from flask import Flask, request, jsonify
 import json
 import time
 from data_models import Frame
+from strategy import AIStrategy
 
 app = Flask(__name__)
 
+# --- AI 初始化 ---
+# 地图尺寸: 28 * 50 = 1400px, 16 * 50 = 800px
+# 格子大小: 50px
+MAP_WIDTH_PX = 28 * 50
+MAP_HEIGHT_PX = 16 * 50
+GRID_SIZE = 50
+
+# 创建AI策略实例
+ai_strategy = AIStrategy(MAP_WIDTH_PX, MAP_HEIGHT_PX, GRID_SIZE)
+# -----------------
 
 @app.route("/api/v1/command", methods=["POST"])
 def handle_command():
@@ -13,11 +24,19 @@ def handle_command():
     data = request.get_json()
     frame = Frame(data)
     
-    response_data = {
-        "direction": "N", # N 代表无方向/静止
-        "is_place_bomb": False,
-        "stride": 0
-    }
+    # 调用AI大脑进行决策
+    action_command = ai_strategy.make_decision(frame)
+    
+    # 如果AI给出了指令，就使用它
+    if action_command:
+        response_data = action_command
+    else:
+        # 否则，原地不动
+        response_data = {
+            "direction": "N", # N 代表无方向/静止
+            "is_place_bomb": False,
+            "stride": 0
+        }
     
     end_time = time.time()
     elapsed_ms = (end_time - start_time) * 1000
