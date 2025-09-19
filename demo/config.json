@@ -1,0 +1,31 @@
+{
+  "seed": 1,
+  "teams": [
+    {
+      "team_name": "Robot_1",
+      "players": [
+        {
+          "player_name": "MyRobot_1",
+          "ip_port": "127.0.0.1:5000"
+        },
+        {
+          "player_name": "MyRobot_2",
+          "ip_port": "127.0.0.1:5000"
+        }
+      ]
+    },
+    {
+      "team_name": "MyRobotTeam_2",
+      "players": [
+        {
+          "player_name": "Robot_2_1",
+          "ip_port": "127.0.0.1:5002"
+        },
+        {
+          "player_name": "Robot_2_2",
+          "ip_port": "127.0.0.1:5002"
+        }
+      ]
+    }
+  ]
+}

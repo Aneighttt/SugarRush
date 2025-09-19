@@ -1,23 +1,30 @@
 from flask import Flask, request, jsonify
-import json
 import time
+import atexit
+
 from data_models import Frame
+from ai_logic import GameAI
 
 app = Flask(__name__)
 
+# --- Global AI Instance Initialization ---
+# All AI logic is now encapsulated within the GameAI class.
+game_ai = GameAI()
 
 @app.route("/api/v1/command", methods=["POST"])
 def handle_command():
+    """
+    Handles the command request from the game server.
+    It receives a frame, passes it to the AI for a decision,
+    and returns the AI's command.
+    """
     start_time = time.time()
 
     data = request.get_json()
     frame = Frame(data)
     
-    response_data = {
-        "direction": "N", # N 代表无方向/静止
-        "is_place_bomb": False,
-        "stride": 0
-    }
+    # Get the command from our AI logic handler
+    response_data = game_ai.get_command(frame)
     
     end_time = time.time()
     elapsed_ms = (end_time - start_time) * 1000
@@ -27,8 +34,16 @@ def handle_command():
 
 @app.route("/api/v1/ping", methods=["HEAD"])
 def handle_ping():
+    """Handles the ping request from the game server for health checks."""
     return "", 200
 
+def on_exit():
+    """Function to be called on application exit to save the AI model."""
+    game_ai.save_model()
+
+# Register the save function to be called on exit
+atexit.register(on_exit)
+
 if __name__ == "__main__":
-    # 使用 debug=False 和 threaded=False 以获得更稳定的行为
+    # Use debug=False and threaded=False for stable, predictable behavior
     app.run(host="0.0.0.0", port=5002, debug=False, threaded=False)
