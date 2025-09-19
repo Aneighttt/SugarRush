@@ -1,4 +1,7 @@
 import torch
+import csv
+import os
+from datetime import datetime
 from data_models import Frame
 from agent import DQNAgent
 from utils import preprocess_frame, MAP_WIDTH, MAP_HEIGHT
@@ -26,8 +29,23 @@ class GameAI:
             'my_territory': 0,
             'enemy_territory': 0,
             'is_stunned': False,
-            'items_collected': 0
+            'items_collected': 0,
+            'frame': None
         }
+        self.total_reward = 0
+        self.current_loss = 0
+
+        # --- Logging Initialization ---
+        log_dir = "logs"
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_file = os.path.join(log_dir, f"training_log_{timestamp}.csv")
+
+        with open(self.log_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["Tick", "Reward", "TotalReward", "Loss", "Epsilon"])
 
     def get_command(self, frame: Frame):
         """
@@ -49,14 +67,17 @@ class GameAI:
             self.agent.remember(self.previous_state, self.previous_action, reward, current_state_tensor, done)
             self.previous_frame_info = new_frame_info
             
-            self.agent.replay(batch_size=32)
+            loss = self.agent.replay(batch_size=32)
+            if loss is not None:
+                self.current_loss = loss
+            self.total_reward += reward
         else:
             # Initialize frame info on the first frame
             my_territory, enemy_territory = self._count_territory(frame)
             self.previous_frame_info['my_territory'] = my_territory
             self.previous_frame_info['enemy_territory'] = enemy_territory
 
-        action = self.agent.choose_action(current_state_tensor)
+        action, q_values = self.agent.choose_action(current_state_tensor)
 
         # Translate action to game command
         direction = "N"
@@ -83,7 +104,23 @@ class GameAI:
         
         # For logging purposes
         reward_str = f"{reward:.2f}" if 'reward' in locals() else "N/A"
-        print(f"--- Tick {frame.current_tick}: Action {action}, Reward {reward_str}, Epsilon {self.agent.epsilon:.4f} ---")
+        loss_str = f"{self.current_loss:.4f}" if self.current_loss != 0 else "N/A"
+        
+        action_probs_str = "RANDOM"
+        if q_values is not None:
+            # Apply softmax to convert Q-values to probabilities
+            probs = torch.nn.functional.softmax(q_values, dim=1).squeeze().tolist()
+            action_map = ["U", "D", "L", "R", "BOMB", "STAY"]
+            action_probs_str = ", ".join([f"{action_map[i]}: {p:.2f}" for i, p in enumerate(probs)])
+
+        print(f"--- Tick {frame.current_tick}: Action {action}, Reward {reward_str}, Total Reward: {self.total_reward:.2f}, Loss: {loss_str}, Epsilon {self.agent.epsilon:.4f} ---")
+        print(f"    Probs: [ {action_probs_str} ]")
+
+        # --- Append to Log File (Sampled every 10 ticks) ---
+        if 'reward' in locals() and frame.current_tick % 10 == 0:
+            with open(self.log_file, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([frame.current_tick, reward, self.total_reward, self.current_loss, self.agent.epsilon])
 
         return response_data
 
@@ -97,11 +134,14 @@ class GameAI:
         my_territory = 0
         enemy_territory = 0
         my_team_id = frame.my_player.team
+        
+        # Find the enemy team ID by looking for the first player who is not on my team
+        enemy_team_id = next((player.team for player in frame.other_players if player.team != my_team_id), 'N')
         for row in frame.map:
             for cell in row:
                 if cell.ownership == my_team_id:
                     my_territory += 1
-                elif cell.ownership is not None:
+                elif cell.ownership == enemy_team_id:
                     enemy_territory += 1
         return my_territory, enemy_territory
 
@@ -109,24 +149,33 @@ class GameAI:
         reward = 0
         my_territory, enemy_territory = self._count_territory(frame)
 
+        # Reward for territory change
         prev_diff = prev_info['my_territory'] - prev_info['enemy_territory']
         current_diff = my_territory - enemy_territory
         reward += (current_diff - prev_diff) * 5
+        
+        # Penalty for getting stunned is now implicitly handled by the large territory loss that follows.
+        is_currently_stunned = (frame.my_player.status == 'D')
 
-        is_currently_stunned = 'INVINCIBLE' in [s.name for s in frame.my_player.extra_status]
-        if is_currently_stunned and not prev_info['is_stunned']:
-            reward -= 300
-
+        # Reward for collecting items
         current_items = frame.my_player.bomb_pack_count + frame.my_player.sweet_potion_count + frame.my_player.agility_boots_count
         if current_items > prev_info['items_collected']:
             reward += 50
 
-        reward += 0.1
+        # Penalty for standing still
+        if prev_info['frame'] is not None and frame.my_player.position == prev_info['frame'].my_player.position:
+            reward -= 2 # Heavier penalty for not moving
+
+        # Small penalty per tick to encourage action
+        reward -= 1
 
         new_info = {
+            'frame': frame,
             'my_territory': my_territory,
             'enemy_territory': enemy_territory,
             'is_stunned': is_currently_stunned,
             'items_collected': current_items
         }
+        print(new_info['my_territory'], new_info['enemy_territory'])
+        print(reward)
         return reward, new_info

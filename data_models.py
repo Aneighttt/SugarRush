@@ -6,6 +6,9 @@ class Position:
         self.x = data['x']
         self.y = data['y']
 
+    def __eq__(self, other):
+        return self.x == other.x and self.y == other.y
+
 class ExtraStatus:
     def __init__(self, data):
         self.name = data['name']
@@ -23,7 +26,6 @@ class Player:
         self.bomb_pack_count = data['bomb_pack_count']
         self.sweet_potion_count = data['sweet_potion_count']
         self.agility_boots_count = data['agility_boots_count']
-
 class Bomb:
     def __init__(self, data):
         self.position = Position(data['position'])

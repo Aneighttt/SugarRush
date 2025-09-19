@@ -10,12 +10,12 @@ class DQNAgent:
     def __init__(self, state_size, action_size):
         self.state_size = state_size
         self.action_size = action_size
-        self.memory = deque(maxlen=10000)
+        self.memory = deque(maxlen=20000)
         
         self.gamma = 0.95
         self.epsilon = 1.0
         self.epsilon_min = 0.01
-        self.epsilon_decay = 0.995
+        self.epsilon_decay = 0.99995
         self.learning_rate = 0.001
         self.update_target_every = 100 # Ticks to update target network
         self.train_counter = 0
@@ -39,16 +39,18 @@ class DQNAgent:
 
     def choose_action(self, state):
         if np.random.rand() <= self.epsilon:
-            return random.randrange(self.action_size)
+            # If action is random, there are no Q-values to return
+            return random.randrange(self.action_size), None
         
         with torch.no_grad():
             state = state.to(self.device)
             act_values = self.model(state)
-            return torch.argmax(act_values).item()
+            # Return the best action and the Q-values for all actions
+            return torch.argmax(act_values).item(), act_values
 
     def replay(self, batch_size):
         if len(self.memory) < batch_size:
-            return
+            return None
             
         minibatch = random.sample(self.memory, batch_size)
         
@@ -81,6 +83,8 @@ class DQNAgent:
 
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
+
+        return loss.item()
 
     def load(self, name):
         self.model.load_state_dict(torch.load(name, map_location=self.device))

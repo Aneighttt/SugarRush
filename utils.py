@@ -70,62 +70,69 @@ def preprocess_frame(frame: data_models.Frame):
     # Channel 0: Terrain, Channel 7/8: Territory, Channel 9: Special Terrain
     for y, row in enumerate(frame.map):
         for x, cell in enumerate(row):
+            # Convert server's bottom-left origin to numpy's top-left origin
+            ny = MAP_HEIGHT - 1 - y
+
             # Channel 0: Terrain
             if cell.terrain in ['I', 'N']:  # Indestructible
-                state[0, y, x] = 1.0
+                state[0, ny, x] = 1.0
             elif cell.terrain == 'D':  # Destructible
-                state[0, y, x] = 0.5
+                state[0, ny, x] = 0.5
             
             # Channel 9: Special Terrain
             if cell.terrain == 'B':  # Acceleration Point
-                state[9, y, x] = 1.0
+                state[9, ny, x] = 1.0
             elif cell.terrain == 'M':  # Deceleration Point
-                state[9, y, x] = 0.5
+                state[9, ny, x] = 0.5
 
             # Channel 7/8: Territory
             if cell.ownership == my_team_id:
-                state[7, y, x] = 1.0
+                state[7, ny, x] = 1.0
             elif cell.ownership is not None:  # Belongs to the other team
-                state[8, y, x] = 1.0
+                state[8, ny, x] = 1.0
 
     # Channel 1: My Player position (representing all occupied cells)
     for gx, gy in get_occupied_grids(frame.my_player.position):
-        state[1, gy, gx] = 1.0
+        ny = MAP_HEIGHT - 1 - gy
+        state[1, ny, gx] = 1.0
 
     # Channel 2: Teammates & Channel 3: Enemies (representing all occupied cells)
     for other_player in frame.other_players:
         for gx, gy in get_occupied_grids(other_player.position):
+            ny = MAP_HEIGHT - 1 - gy
             if other_player.team == my_team_id:
-                state[2, gy, gx] = 1.0  # Teammate
+                state[2, ny, gx] = 1.0  # Teammate
             else:
-                state[3, gy, gx] = 1.0  # Enemy
+                state[3, ny, gx] = 1.0  # Enemy
 
     # Channels 4 & 5: Bombs and Danger Zones
     for bomb in frame.bombs:
         # FIX: bomb.position is already in grid coordinates, no conversion needed.
         bomb_x, bomb_y = bomb.position.x, bomb.position.y
+        ny_bomb = MAP_HEIGHT - 1 - bomb_y
         time_to_explode = bomb.explode_at - frame.current_tick
-        state[4, bomb_y, bomb_x] = max(0, 1.0 - (time_to_explode / 100.0))
+        state[4, ny_bomb, bomb_x] = max(0, 1.0 - (time_to_explode / 100.0))
 
-        state[5, bomb_y, bomb_x] = 1.0
+        state[5, ny_bomb, bomb_x] = 1.0
         for i in range(1, bomb.range + 1): # Right
-            if bomb_x + i >= MAP_WIDTH or state[0, bomb_y, bomb_x + i] == 1.0: break
-            state[5, bomb_y, bomb_x + i] = 1.0
+            if bomb_x + i >= MAP_WIDTH or state[0, ny_bomb, bomb_x + i] == 1.0: break
+            state[5, ny_bomb, bomb_x + i] = 1.0
         for i in range(1, bomb.range + 1): # Left
-            if bomb_x - i < 0 or state[0, bomb_y, bomb_x - i] == 1.0: break
-            state[5, bomb_y, bomb_x - i] = 1.0
-        for i in range(1, bomb.range + 1): # Up
-            if bomb_y + i >= MAP_HEIGHT or state[0, bomb_y + i, bomb_x] == 1.0: break
-            state[5, bomb_y + i, bomb_x] = 1.0
-        for i in range(1, bomb.range + 1): # Down
-            if bomb_y - i < 0 or state[0, bomb_y - i, bomb_x] == 1.0: break
-            state[5, bomb_y - i, bomb_x] = 1.0
+            if bomb_x - i < 0 or state[0, ny_bomb, bomb_x - i] == 1.0: break
+            state[5, ny_bomb, bomb_x - i] = 1.0
+        for i in range(1, bomb.range + 1): # Up (in numpy: y decreases)
+            if ny_bomb - i < 0 or state[0, ny_bomb - i, bomb_x] == 1.0: break
+            state[5, ny_bomb - i, bomb_x] = 1.0
+        for i in range(1, bomb.range + 1): # Down (in numpy: y increases)
+            if ny_bomb + i >= MAP_HEIGHT or state[0, ny_bomb + i, bomb_x] == 1.0: break
+            state[5, ny_bomb + i, bomb_x] = 1.0
 
     # Channel 6: Items
     for item in frame.map_items:
         # FIX: Assuming item.position is also in grid coordinates.
         item_x, item_y = item.position.x, item.position.y
-        state[6, item_y, item_x] = 1.0
+        ny_item = MAP_HEIGHT - 1 - item_y
+        state[6, ny_item, item_x] = 1.0
         
     # Channel 10: My player's invincibility status
     # If invincible, fill the entire channel with 1.0 to give a strong signal to the CNN
