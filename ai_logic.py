@@ -62,7 +62,9 @@ class GameAI:
 
         if self.previous_state is not None:
             reward, new_frame_info = self._calculate_reward(frame, self.previous_frame_info)
-            done = False  # Game doesn't end on stun
+            
+            # Check for the end of the game
+            done = frame.current_tick == 1800
             
             self.agent.remember(self.previous_state, self.previous_action, reward, current_state_tensor, done)
             self.previous_frame_info = new_frame_info
@@ -148,6 +150,14 @@ class GameAI:
     def _calculate_reward(self, frame: Frame, prev_info: dict):
         reward = 0
         my_territory, enemy_territory = self._count_territory(frame)
+
+        # --- Terminal Reward on the last tick ---
+        if frame.current_tick == 1800:
+            if my_territory > enemy_territory:
+                reward += 500  # Large reward for winning
+            elif my_territory < enemy_territory:
+                reward -= 500  # Large penalty for losing
+            # No extra reward for a draw
 
         # Reward for territory change
         prev_diff = prev_info['my_territory'] - prev_info['enemy_territory']

@@ -14,11 +14,12 @@ class DQNAgent:
         
         self.gamma = 0.95
         self.epsilon = 1.0
-        self.epsilon_min = 0.01
+        self.epsilon_min = 0.05
         self.epsilon_decay = 0.99995
         self.learning_rate = 0.001
         self.update_target_every = 100 # Ticks to update target network
         self.train_counter = 0
+        self.epsilon_reset_tick = 18000 # Reset epsilon every 18000 training steps (approx. 10 games)
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
@@ -83,6 +84,11 @@ class DQNAgent:
 
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
+
+        # --- Exploration Restart Logic ---
+        if self.train_counter > 0 and self.train_counter % self.epsilon_reset_tick == 0:
+            self.epsilon = 1.0
+            print(f"--- EXPLORATION RESTART: Epsilon reset to 1.0 at training step {self.train_counter} ---")
 
         return loss.item()
 
