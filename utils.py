@@ -41,101 +41,121 @@ def get_grid_position(pixel_pos):
     grid_y = int(pixel_pos.y / PIXEL_PER_CELL)
     return grid_x, grid_y
 
-def preprocess_frame(frame: data_models.Frame):
+def _get_explosion_grids(bomb, frame: data_models.Frame):
+    """(Util) Calculates the grid cells affected by a single bomb's explosion."""
+    explosion_grids = set()
+    bomb_x, bomb_y = bomb.position.x, bomb.position.y
+    explosion_grids.add((bomb_x, bomb_y))
+    # Right
+    for i in range(1, bomb.range + 1):
+        x = bomb_x + i
+        if not (0 <= x < MAP_WIDTH): break
+        explosion_grids.add((x, bomb_y))
+        if frame.map[bomb_y][x].terrain in ['I', 'N', 'D']: break
+    # Left
+    for i in range(1, bomb.range + 1):
+        x = bomb_x - i
+        if not (0 <= x < MAP_WIDTH): break
+        explosion_grids.add((x, bomb_y))
+        if frame.map[bomb_y][x].terrain in ['I', 'N', 'D']: break
+    # Up
+    for i in range(1, bomb.range + 1):
+        y = bomb_y + i
+        if not (0 <= y < MAP_HEIGHT): break
+        explosion_grids.add((bomb_x, y))
+        if frame.map[y][bomb_x].terrain in ['I', 'N', 'D']: break
+    # Down
+    for i in range(1, bomb.range + 1):
+        y = bomb_y - i
+        if not (0 <= y < MAP_HEIGHT): break
+        explosion_grids.add((bomb_x, y))
+        if frame.map[y][bomb_x].terrain in ['I', 'N', 'D']: break
+    return explosion_grids
+
+def _get_full_danger_zones(frame: data_models.Frame):
+    """(Util) Calculates all danger zones on the map from all bombs."""
+    danger_zones = set()
+    for bomb in frame.bombs:
+        danger_zones.update(_get_explosion_grids(bomb, frame))
+    return danger_zones
+
+def preprocess_frame(frame: data_models.Frame, view_size=11):
     """
-    Converts a raw frame object from the server into a state representation
-    for the neural network, based on the 2v2 territory control rules.
+    Converts a raw frame into a self-centered, localized state representation.
 
     Args:
         frame (data_models.Frame): The frame object.
+        view_size (int): The width and height of the local view (e.g., 11x11).
 
     Returns:
-        np.array: A multi-channel numpy array representing the game state.
+        np.array: A multi-channel numpy array representing the local game state.
     """
-    # 0: Terrain (0: empty, 0.5: destructible, 1: indestructible)
-    # 1: My Player position
-    # 2: Teammate positions
-    # 3: Enemy positions
-    # 4: Bombs (value = normalized time to explosion)
-    # 5: Danger zones
-    # 6: Items
-    # 7: My team's territory
-    # 8: Enemy team's territory
-    # 9: Special terrain (e.g., slowdown)
-    # 10: My player's invincibility status
     num_channels = 11
-    state = np.zeros((num_channels, MAP_HEIGHT, MAP_WIDTH), dtype=np.float32)
+    # The state is now the size of the local view
+    state = np.zeros((num_channels, view_size, view_size), dtype=np.float32)
     my_team_id = frame.my_player.team
+    
+    # Get my player's grid position, which will be the center of our view
+    my_gx, my_gy = get_grid_position(frame.my_player.position)
+    
+    half_view = view_size // 2
 
-    # Channel 0: Terrain, Channel 7/8: Territory, Channel 9: Special Terrain
-    for y, row in enumerate(frame.map):
-        for x, cell in enumerate(row):
-            # Convert server's bottom-left origin to numpy's top-left origin
-            ny = MAP_HEIGHT - 1 - y
 
-            # Channel 0: Terrain
-            if cell.terrain in ['I', 'N']:  # Indestructible
-                state[0, ny, x] = 1.0
-            elif cell.terrain == 'D':  # Destructible
-                state[0, ny, x] = 0.5
+    # Pre-calculate all danger zones on the absolute map
+    danger_zones = _get_full_danger_zones(frame)
+
+    # --- Populate channels based on the cell at (map_x, map_y) ---
+    # (This loop is now aware of the pre-calculated danger zones)
+    for dy in range(-half_view, half_view + 1):
+        for dx in range(-half_view, half_view + 1):
+            map_x, map_y = my_gx + dx, my_gy + dy
+            state_x, state_y = dx + half_view, dy + half_view
+
+            if not (0 <= map_x < MAP_WIDTH and 0 <= map_y < MAP_HEIGHT):
+                state[0, state_y, state_x] = 1.0
+                continue
+
+            cell = frame.map[map_y][map_x]
+            if cell.terrain in ['I', 'N']: state[0, state_y, state_x] = 1.0
+            elif cell.terrain == 'D': state[0, state_y, state_x] = 0.5
+            if cell.terrain == 'B': state[9, state_y, state_x] = 1.0
+            elif cell.terrain == 'M': state[9, state_y, state_x] = 0.5
+            if cell.ownership == my_team_id: state[7, state_y, state_x] = 1.0
+            elif cell.ownership is not None: state[8, state_y, state_x] = 1.0
             
-            # Channel 9: Special Terrain
-            if cell.terrain == 'B':  # Acceleration Point
-                state[9, ny, x] = 1.0
-            elif cell.terrain == 'M':  # Deceleration Point
-                state[9, ny, x] = 0.5
+            # Channel 5: Danger Zones (now using the pre-calculated set)
+            if (map_x, map_y) in danger_zones:
+                state[5, state_y, state_x] = 1.0
 
-            # Channel 7/8: Territory
-            if cell.ownership == my_team_id:
-                state[7, ny, x] = 1.0
-            elif cell.ownership is not None:  # Belongs to the other team
-                state[8, ny, x] = 1.0
+    # --- Populate object-based channels relative to our position ---
+    state[1, half_view, half_view] = 1.0
 
-    # Channel 1: My Player position (representing all occupied cells)
-    for gx, gy in get_occupied_grids(frame.my_player.position):
-        ny = MAP_HEIGHT - 1 - gy
-        state[1, ny, gx] = 1.0
+    for p in frame.other_players:
+        gx, gy = get_grid_position(p.position)
+        rel_dx, rel_dy = gx - my_gx, gy - my_gy
+        if abs(rel_dx) <= half_view and abs(rel_dy) <= half_view:
+            state_x, state_y = rel_dx + half_view, rel_dy + half_view
+            if p.team == my_team_id: state[2, state_y, state_x] = 1.0
+            else: state[3, state_y, state_x] = 1.0
 
-    # Channel 2: Teammates & Channel 3: Enemies (representing all occupied cells)
-    for other_player in frame.other_players:
-        for gx, gy in get_occupied_grids(other_player.position):
-            ny = MAP_HEIGHT - 1 - gy
-            if other_player.team == my_team_id:
-                state[2, ny, gx] = 1.0  # Teammate
-            else:
-                state[3, ny, gx] = 1.0  # Enemy
-
-    # Channels 4 & 5: Bombs and Danger Zones
+    # Channel 4: Bombs
     for bomb in frame.bombs:
-        # FIX: bomb.position is already in grid coordinates, no conversion needed.
-        bomb_x, bomb_y = bomb.position.x, bomb.position.y
-        ny_bomb = MAP_HEIGHT - 1 - bomb_y
-        time_to_explode = bomb.explode_at - frame.current_tick
-        state[4, ny_bomb, bomb_x] = max(0, 1.0 - (time_to_explode / 100.0))
-
-        state[5, ny_bomb, bomb_x] = 1.0
-        for i in range(1, bomb.range + 1): # Right
-            if bomb_x + i >= MAP_WIDTH or state[0, ny_bomb, bomb_x + i] == 1.0: break
-            state[5, ny_bomb, bomb_x + i] = 1.0
-        for i in range(1, bomb.range + 1): # Left
-            if bomb_x - i < 0 or state[0, ny_bomb, bomb_x - i] == 1.0: break
-            state[5, ny_bomb, bomb_x - i] = 1.0
-        for i in range(1, bomb.range + 1): # Up (in numpy: y decreases)
-            if ny_bomb - i < 0 or state[0, ny_bomb - i, bomb_x] == 1.0: break
-            state[5, ny_bomb - i, bomb_x] = 1.0
-        for i in range(1, bomb.range + 1): # Down (in numpy: y increases)
-            if ny_bomb + i >= MAP_HEIGHT or state[0, ny_bomb + i, bomb_x] == 1.0: break
-            state[5, ny_bomb + i, bomb_x] = 1.0
+        gx, gy = bomb.position.x, bomb.position.y
+        rel_dx, rel_dy = gx - my_gx, gy - my_gy
+        if abs(rel_dx) <= half_view and abs(rel_dy) <= half_view:
+            state_x, state_y = rel_dx + half_view, rel_dy + half_view
+            time_to_explode = bomb.explode_at - frame.current_tick
+            state[4, state_y, state_x] = max(0, 1.0 - (time_to_explode / 100.0))
 
     # Channel 6: Items
     for item in frame.map_items:
-        # FIX: Assuming item.position is also in grid coordinates.
-        item_x, item_y = item.position.x, item.position.y
-        ny_item = MAP_HEIGHT - 1 - item_y
-        state[6, ny_item, item_x] = 1.0
-        
+        gx, gy = item.position.x, item.position.y
+        rel_dx, rel_dy = gx - my_gx, gy - my_gy
+        if abs(rel_dx) <= half_view and abs(rel_dy) <= half_view:
+            state_x, state_y = rel_dx + half_view, rel_dy + half_view
+            state[6, state_y, state_x] = 1.0
+            
     # Channel 10: My player's invincibility status
-    # If invincible, fill the entire channel with 1.0 to give a strong signal to the CNN
     if 'INVINCIBLE' in [s.name for s in frame.my_player.extra_status]:
         state[10, :, :] = 1.0
 

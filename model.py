@@ -18,10 +18,8 @@ class DQN(nn.Module):
         self.conv1 = nn.Conv2d(input_shape[0], 32, kernel_size=3, stride=1, padding=1)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
         
-        # The following linear layer size needs to be calculated based on the actual input shape
-        # after passing through the convolutional layers. This is a placeholder.
-        # For a 28x16 map, the flattened size would be 64 * 28 * 16.
-        # This needs to be adjusted once the state representation is finalized.
+        # The size of the fully connected layer is dynamically calculated
+        # based on the output of the convolutional layers.
         dummy_input = torch.zeros(1, *input_shape)
         conv_out_size = self._get_conv_out(dummy_input)
 
@@ -59,20 +57,18 @@ class DQN(nn.Module):
 
 # Example usage (for testing purposes):
 if __name__ == '__main__':
-    # Assuming a state representation with 4 channels (e.g., player, walls, bombs, danger zone)
-    # on a 28x16 map.
-    STATE_CHANNELS = 4
-    MAP_HEIGHT = 16
-    MAP_WIDTH = 28
-    NUM_ACTIONS = 6 # Up, Down, Left, Right, Bomb, Stay
+    # Example for a self-centered 11x11 view with 11 channels
+    STATE_CHANNELS = 11
+    VIEW_SIZE = 11
+    NUM_ACTIONS = 6
 
-    input_shape = (STATE_CHANNELS, MAP_HEIGHT, MAP_WIDTH)
+    input_shape = (STATE_CHANNELS, VIEW_SIZE, VIEW_SIZE)
     
     model = DQN(input_shape, NUM_ACTIONS)
     print(model)
 
     # Create a dummy state tensor
-    dummy_state = torch.randn(1, STATE_CHANNELS, MAP_HEIGHT, MAP_WIDTH)
+    dummy_state = torch.randn(1, *input_shape)
     
     # Get the Q-values for the dummy state
     q_values = model(dummy_state)

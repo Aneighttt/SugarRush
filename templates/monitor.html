@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Decision Monitor</title>
+    <style>
+        body { font-family: sans-serif; background-color: #1e1e1e; color: #d4d4d4; display: flex; justify-content: center; align-items: flex-start; padding: 20px; }
+        .dashboard { display: flex; gap: 20px; }
+        .player-panel { border: 1px solid #555; padding: 15px; width: 400px; background-color: #252526; }
+        h2 { margin-top: 0; border-bottom: 1px solid #555; padding-bottom: 10px; }
+        .info { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; }
+        .info-item { background-color: #333; padding: 8px; border-radius: 4px; }
+        .info-item strong { color: #4ec9b0; }
+        .q-values-container { margin-top: 15px; }
+        .q-bar { background-color: #007acc; color: white; padding: 5px; margin-bottom: 5px; font-size: 12px; white-space: nowrap; border-radius: 3px; transition: width 0.2s ease-in-out; }
+    </style>
+</head>
+<body data-player-ids="{{ player_ids | tojson | e }}">
+    <div class="dashboard">
+        {% for player_id in player_ids %}
+        <div class="player-panel" id="panel-{{ player_id }}">
+            <h2>Player {{ player_id }}</h2>
+            <div class="info">
+                <div class="info-item"><strong>Tick:</strong> <span id="tick-{{ player_id }}">N/A</span></div>
+                <div class="info-item"><strong>Action:</strong> <span id="action-{{ player_id }}">N/A</span></div>
+                <div class="info-item"><strong>Reward:</strong> <span id="reward-{{ player_id }}">N/A</span></div>
+                <div class="info-item"><strong>Total Reward:</strong> <span id="total_reward-{{ player_id }}">N/A</span></div>
+                <div class="info-item"><strong>Loss:</strong> <span id="loss-{{ player_id }}">N/A</span></div>
+                <div class="info-item"><strong>Epsilon:</strong> <span id="epsilon-{{ player_id }}">N/A</span></div>
+            </div>
+            <div class="q-values-container">
+                <strong>Q-Values (Probs):</strong>
+                <div id="q-values-{{ player_id }}"></div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <script>
+        const ACTION_MAP = ["U", "D", "L", "R", "BOMB", "STAY"];
+
+        function updatePlayerData(playerId) {
+            fetch(`/data/${playerId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        console.log(`No data for player ${playerId} yet.`);
+                        return;
+                    }
+                    document.getElementById(`tick-${playerId}`).textContent = data.tick ?? 'N/A';
+                    document.getElementById(`action-${playerId}`).textContent = data.action ?? 'N/A';
+                    document.getElementById(`reward-${playerId}`).textContent = data.reward ?? 'N/A';
+                    document.getElementById(`total_reward-${playerId}`).textContent = data.total_reward ?? 'N/A';
+                    document.getElementById(`loss-${playerId}`).textContent = data.loss ?? 'N/A';
+                    document.getElementById(`epsilon-${playerId}`).textContent = data.epsilon ?? 'N/A';
+
+                    const qValuesContainer = document.getElementById(`q-values-${playerId}`);
+                    qValuesContainer.innerHTML = '';
+                    if (data.q_values) {
+                        const maxQ = Math.max(...data.q_values);
+                        data.q_values.forEach((q, index) => {
+                            const percentage = (q / (maxQ > 0 ? maxQ : 1)) * 100;
+                            const bar = document.createElement('div');
+                            bar.className = 'q-bar';
+                            bar.style.width = `${percentage}%`;
+                            bar.textContent = `${ACTION_MAP[index]}: ${q.toFixed(2)}`;
+                            qValuesContainer.appendChild(bar);
+                        });
+                    }
+                })
+                .catch(error => console.error(`Error fetching data for player ${playerId}:`, error));
+        }
+
+        const playerIds = JSON.parse(document.body.dataset.playerIds);
+        playerIds.forEach(id => {
+            setInterval(() => updatePlayerData(id), 200); // Update every 200ms
+        });
+    </script>
+</body>
+</html>

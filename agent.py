@@ -15,13 +15,22 @@ class DQNAgent:
         self.gamma = 0.95
         self.epsilon = 1.0
         self.epsilon_min = 0.05
-        self.epsilon_decay = 0.99995
+        # This decay rate is calculated to bring epsilon from 1.0 to ~0.05 in ~18000 steps (10 games).
+        # ln(0.05) / 18000 = -0.000166 -> e^-0.000166 ~= 0.99983
+        self.epsilon_decay = 0.999
         self.learning_rate = 0.001
         self.update_target_every = 100 # Ticks to update target network
         self.train_counter = 0
-        self.epsilon_reset_tick = 18000 # Reset epsilon every 18000 training steps (approx. 10 games)
+        # We reset epsilon every 20 games (~36000 steps).
+        # This provides a 10-game "learning phase" and a 10-game "exploitation phase".
+        self.epsilon_reset_tick = 10800
         
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+        elif torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        else:
+            self.device = torch.device("cpu")
         
         self.model = self._build_model().to(self.device)
         self.target_model = self._build_model().to(self.device)
@@ -76,6 +85,8 @@ class DQNAgent:
         # Optimize the model
         self.optimizer.zero_grad()
         loss.backward()
+        # --- CRITICAL: Gradient Clipping to prevent exploding gradients ---
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
         self.optimizer.step()
 
         self.train_counter += 1
