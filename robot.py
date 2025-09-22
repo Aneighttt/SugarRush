@@ -18,7 +18,8 @@ app = Flask(__name__)
 VIEW_SIZE = 11
 FRAME_STACK = 2
 VISUAL_STATE_CHANNELS = 11 * FRAME_STACK
-VECTOR_STATE_SIZE = 3 # agility_boots, bomb_pack, sweet_potion
+# 3 items + 4 collision directions
+VECTOR_STATE_SIZE = 7
 ACTION_SIZE = 6
 INPUT_SHAPE = (VISUAL_STATE_CHANNELS, VIEW_SIZE, VIEW_SIZE)
 shared_agent = DQNAgent(state_size=INPUT_SHAPE, action_size=ACTION_SIZE, vector_size=VECTOR_STATE_SIZE)
@@ -117,6 +118,12 @@ def render_tactical_sandboard(frame: Frame, tactical_data: dict):
                 details_str += colored(f"{action_name}: {q[i]:.2f} | ", color)
         elif data:
             details_str += colored("RANDOM ACTION", color)
+        
+        if data:
+            reward = data.get('reward', 0.0)
+            reward_color = 'green' if reward > 0 else 'red' if reward < 0 else 'white'
+            details_str += colored(f" | Reward: {reward:.2f}", reward_color)
+
         details_str += "\n"
 
     output += details_str

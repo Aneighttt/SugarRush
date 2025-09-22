@@ -6,7 +6,7 @@ from collections import deque
 from datetime import datetime
 from data_models import Frame
 from agent import DQNAgent
-from utils import preprocess_frame, MAP_WIDTH, MAP_HEIGHT
+from utils import preprocess_frame, MAP_WIDTH, MAP_HEIGHT, get_grid_position, _get_nearby_wall_pixels, _check_pixel_collision
 from model import DQN
 
 class GameAI:
@@ -73,10 +73,17 @@ class GameAI:
         stacked_state_tensor = torch.from_numpy(stacked_state).float().unsqueeze(0)
 
         # 3. Create the non-visual vector
+        my_grid_pos = get_grid_position(frame.my_player.position)
+        wall_pixels = _get_nearby_wall_pixels(my_grid_pos, frame)
+        
         vector_state = np.array([
             frame.my_player.agility_boots_count,
             frame.my_player.bomb_pack_count,
-            frame.my_player.sweet_potion_count
+            frame.my_player.sweet_potion_count,
+            1.0 if _check_pixel_collision(frame.my_player.position, 'U', wall_pixels) else 0.0,
+            1.0 if _check_pixel_collision(frame.my_player.position, 'D', wall_pixels) else 0.0,
+            1.0 if _check_pixel_collision(frame.my_player.position, 'L', wall_pixels) else 0.0,
+            1.0 if _check_pixel_collision(frame.my_player.position, 'R', wall_pixels) else 0.0,
         ], dtype=np.float32)
         vector_state_tensor = torch.from_numpy(vector_state).float().unsqueeze(0)
 
@@ -180,7 +187,8 @@ class GameAI:
             "player_id": player_id,
             "q_values": probs if not is_random_action else None,
             "position": frame.my_player.position,
-            "epsilon": self.agent.epsilon
+            "epsilon": self.agent.epsilon,
+            "reward": float(f"{reward:.2f}") if 'reward' in locals() else 0.0
         }
 
         return response_data, viz_data, tactical_data
@@ -312,17 +320,23 @@ class GameAI:
                     strategic_value = 0
                     explosion_area = self._get_explosion_grids(new_bomb, current_frame)
                     enemy_grids = set()
+                    my_grids = set(self.get_occupied_grids_from_position(current_frame.my_player.position))
+
                     for p in current_frame.other_players:
                         if p.team != current_frame.my_player.team:
                             enemy_grids.update(self.get_occupied_grids_from_position(p.position))
                     
+                    # --- CRITICAL: Heavy penalty for self-harming bomb placement ---
+                    if my_grids.intersection(explosion_area):
+                        strategic_value -= 100
+
                     for x, y in explosion_area:
                         if current_frame.map[y][x].terrain == 'D':
                             strategic_value += 2
                         if (x, y) in enemy_grids:
                             strategic_value += 15
-                    if strategic_value > 0:
-                        reward += strategic_value
+                    
+                    reward += strategic_value
 
         # --- Penalties ---
         is_move_action = self.previous_action in [0, 1, 2, 3]
