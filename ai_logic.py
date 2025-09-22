@@ -148,9 +148,9 @@ class GameAI:
             probs = torch.nn.functional.softmax(q_values, dim=1).squeeze().tolist()
             action_probs_str = ", ".join([f"{action_map[i]}: {p:.2f}" for i, p in enumerate(probs)])
 
-        print(f"--- [Player {player_id}] Tick {frame.current_tick}: Action {action}, Reward {reward_str}, Total Reward: {self.total_reward:.2f}, Loss: {loss_str}, Epsilon {self.agent.epsilon:.4f} ---")
-        print(f"    [Player {player_id}] Probs: [ {action_probs_str} ]")
-        print(f"    [Player {player_id}] Command: {response_data}")
+        # print(f"--- [Player {player_id}] Tick {frame.current_tick}: Action {action}, Reward {reward_str}, Total Reward: {self.total_reward:.2f}, Loss: {loss_str}, Epsilon {self.agent.epsilon:.4f} ---")
+        # print(f"    [Player {player_id}] Probs: [ {action_probs_str} ]")
+        # print(f"    [Player {player_id}] Command: {response_data}")
 
         # --- Append to Log File (Sampled every 10 ticks) ---
         if 'reward' in locals() and frame.current_tick % 10 == 0:
@@ -175,7 +175,15 @@ class GameAI:
             "output_command": response_data
         }
 
-        return response_data, viz_data
+        # --- Prepare Tactical Info Package for Terminal Visualization ---
+        tactical_data = {
+            "player_id": player_id,
+            "q_values": probs if not is_random_action else None,
+            "position": frame.my_player.position,
+            "epsilon": self.agent.epsilon
+        }
+
+        return response_data, viz_data, tactical_data
 
     # The save_model method is no longer needed here, as the shared agent
     # will be saved directly by the main robot script.
