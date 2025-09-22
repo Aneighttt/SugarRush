@@ -13,12 +13,15 @@ app = Flask(__name__)
 # --- Shared, Persistent AI Brain (DQNAgent) ---
 # This is the single, persistent brain that all player instances will use.
 # It holds the neural network, memory, and learning state (like epsilon).
-# The input is now a self-centered 11x11 view.
+# The input is now a self-centered 11x11 view, stacked over 2 frames,
+# plus a vector of non-visual information.
 VIEW_SIZE = 11
-STATE_CHANNELS = 11
+FRAME_STACK = 2
+VISUAL_STATE_CHANNELS = 11 * FRAME_STACK
+VECTOR_STATE_SIZE = 3 # agility_boots, bomb_pack, sweet_potion
 ACTION_SIZE = 6
-INPUT_SHAPE = (STATE_CHANNELS, VIEW_SIZE, VIEW_SIZE)
-shared_agent = DQNAgent(state_size=INPUT_SHAPE, action_size=ACTION_SIZE)
+INPUT_SHAPE = (VISUAL_STATE_CHANNELS, VIEW_SIZE, VIEW_SIZE)
+shared_agent = DQNAgent(state_size=INPUT_SHAPE, action_size=ACTION_SIZE, vector_size=VECTOR_STATE_SIZE)
 try:
     shared_agent.load("bomberman_dqn_2v2.pth")
     print("--- Shared agent model weights loaded successfully. ---")

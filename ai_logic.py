@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import csv
 import os
+from collections import deque
 from datetime import datetime
 from data_models import Frame
 from agent import DQNAgent
@@ -21,7 +22,10 @@ class GameAI:
         self.agent = agent
 
         # --- State Tracking (specific to this player instance for one game) ---
-        self.previous_state = None
+        self.processed_frame_history = deque(maxlen=2) # Stores preprocessed numpy arrays
+        self.raw_frame_history = deque(maxlen=2) # Stores raw frame objects for reward calculation
+        self.previous_stacked_state = None
+        self.previous_vector_state = None
         self.previous_action = None
         self.previous_frame_info = {
             'my_territory': 0,
@@ -29,7 +33,6 @@ class GameAI:
             'is_stunned': False,
             'items_collected': 0,
             'my_bomb_identifiers': set(),
-            'frame': None
         }
         self.total_reward = 0
         self.current_loss = 0
@@ -57,29 +60,56 @@ class GameAI:
         Returns:
             dict: A dictionary containing the command for the game server.
         """
-        current_state = preprocess_frame(frame)
-        current_state_tensor = torch.from_numpy(current_state).float().unsqueeze(0)
+        # 1. Preprocess the current frame and update histories
+        current_processed_frame = preprocess_frame(frame)
+        self.processed_frame_history.append(current_processed_frame)
+        self.raw_frame_history.append(frame)
+        if len(self.processed_frame_history) == 1: # Handle the very first frame
+            self.processed_frame_history.append(current_processed_frame)
+            self.raw_frame_history.append(frame)
 
-        if self.previous_state is not None:
+        # 2. Stack the preprocessed frames from history
+        stacked_state = np.concatenate(self.processed_frame_history, axis=0)
+        stacked_state_tensor = torch.from_numpy(stacked_state).float().unsqueeze(0)
+
+        # 3. Create the non-visual vector
+        vector_state = np.array([
+            frame.my_player.agility_boots_count,
+            frame.my_player.bomb_pack_count,
+            frame.my_player.sweet_potion_count
+        ], dtype=np.float32)
+        vector_state_tensor = torch.from_numpy(vector_state).float().unsqueeze(0)
+
+        if self.previous_stacked_state is not None:
             reward, new_frame_info = self._calculate_reward(frame, self.previous_frame_info)
             
             # Check for the end of the game
             done = frame.current_tick == 1800
             
-            self.agent.remember(self.previous_state, self.previous_action, reward, current_state_tensor, done)
-            self.previous_frame_info = new_frame_info
+            self.agent.remember(
+                self.previous_stacked_state, self.previous_vector_state,
+                self.previous_action, reward,
+                stacked_state_tensor, vector_state_tensor,
+                done
+            )
             
+            # Update frame info for the next iteration
+            self.previous_frame_info.update(new_frame_info)
+
             loss = self.agent.replay(batch_size=32)
             if loss is not None:
                 self.current_loss = loss
             self.total_reward += reward
         else:
-            # Initialize frame info on the first frame
+            # On the first frame, initialize all necessary info
             my_territory, enemy_territory = self._count_territory(frame)
             self.previous_frame_info['my_territory'] = my_territory
             self.previous_frame_info['enemy_territory'] = enemy_territory
+            self.previous_frame_info['items_collected'] = frame.my_player.bomb_pack_count + frame.my_player.sweet_potion_count + frame.my_player.agility_boots_count
+            self.previous_frame_info['is_stunned'] = (frame.my_player.status == 'D')
+            self.previous_frame_info['my_bomb_identifiers'] = {(b.position.x, b.position.y, b.explode_at) for b in frame.bombs if b.owner_id == frame.my_player.id}
 
-        action, q_values = self.agent.choose_action(current_state_tensor)
+        action, q_values = self.agent.choose_action(stacked_state_tensor, vector_state_tensor)
 
         # Translate action to game command
         direction = "N"
@@ -101,7 +131,8 @@ class GameAI:
             "stride": speed
         }
         
-        self.previous_state = current_state_tensor
+        self.previous_stacked_state = stacked_state_tensor
+        self.previous_vector_state = vector_state_tensor
         self.previous_action = action
         
         # For logging purposes
@@ -119,6 +150,7 @@ class GameAI:
 
         print(f"--- [Player {player_id}] Tick {frame.current_tick}: Action {action}, Reward {reward_str}, Total Reward: {self.total_reward:.2f}, Loss: {loss_str}, Epsilon {self.agent.epsilon:.4f} ---")
         print(f"    [Player {player_id}] Probs: [ {action_probs_str} ]")
+        print(f"    [Player {player_id}] Command: {response_data}")
 
         # --- Append to Log File (Sampled every 10 ticks) ---
         if 'reward' in locals() and frame.current_tick % 10 == 0:
@@ -139,7 +171,8 @@ class GameAI:
             "total_reward": float(f"{self.total_reward:.2f}"),
             "loss": float(f"{self.current_loss:.4f}") if self.current_loss != 0 else None,
             "epsilon": float(f"{self.agent.epsilon:.4f}"),
-            "q_values": [float(f"{p:.2f}") for p in probs] if not is_random_action else None
+            "q_values": [float(f"{p:.2f}") for p in probs] if not is_random_action else None,
+            "output_command": response_data
         }
 
         return response_data, viz_data
@@ -231,97 +264,81 @@ class GameAI:
             danger_zones.update(self._get_explosion_grids(bomb, frame))
         return danger_zones
 
-    def _calculate_reward(self, frame: Frame, prev_info: dict):
+    def _calculate_reward(self, current_frame: Frame, prev_info: dict):
         reward = 0
-        my_territory, enemy_territory = self._count_territory(frame)
+        current_bombs = [b for b in current_frame.bombs if b.owner_id == current_frame.my_player.id]
+        
+        # --- Reward for territory change (using passed-in previous state) ---
+        current_my_territory, current_enemy_territory = self._count_territory(current_frame)
+        prev_diff = prev_info['my_territory'] - prev_info['enemy_territory']
+        current_diff = current_my_territory - current_enemy_territory
+        reward += (current_diff - prev_diff) * 5
 
         # --- Terminal Reward on the last tick ---
-        if frame.current_tick == 1800:
-            if my_territory > enemy_territory:
-                reward += 500  # Large reward for winning
-            elif my_territory < enemy_territory:
-                reward -= 500  # Large penalty for losing
-            # No extra reward for a draw
+        if current_frame.current_tick == 1800:
+            if current_my_territory > current_enemy_territory:
+                reward += 500
+            elif current_my_territory < current_enemy_territory:
+                reward -= 500
 
-        # Reward for territory change
-        prev_diff = prev_info['my_territory'] - prev_info['enemy_territory']
-        current_diff = my_territory - enemy_territory
-        reward += (current_diff - prev_diff) * 5
-        
-        # Penalty for getting stunned is now implicitly handled by the large territory loss that follows.
-        is_currently_stunned = (frame.my_player.status == 'D')
-        if is_currently_stunned and not prev_info['is_stunned']: # Penalize only on the frame it happens
-            reward -= 200 # Heavy penalty for getting stunned/killed
+        # --- Event-based Rewards/Penalties ---
+        is_currently_stunned = (current_frame.my_player.status == 'D')
+        if is_currently_stunned and not prev_info['is_stunned']:
+            reward -= 200
 
-        # Reward for collecting items
-        current_items = frame.my_player.bomb_pack_count + frame.my_player.sweet_potion_count + frame.my_player.agility_boots_count
+        current_items = current_frame.my_player.bomb_pack_count + current_frame.my_player.sweet_potion_count + current_frame.my_player.agility_boots_count
         if current_items > prev_info['items_collected']:
             reward += 50
 
         # --- Reward for strategic bomb placement (Intent-based reward) ---
-        if self.previous_action == 4 and prev_info['frame'] is not None:
-            my_current_bombs = [b for b in frame.bombs if b.owner_id == frame.my_player.id]
-            current_bomb_identifiers = {(b.position.x, b.position.y, b.explode_at) for b in my_current_bombs}
+        if self.previous_action == 4:
+            current_bomb_identifiers = {(b.position.x, b.position.y, b.explode_at) for b in current_bombs}
             prev_bomb_identifiers = prev_info.get('my_bomb_identifiers', set())
             
             new_bomb_identifiers = current_bomb_identifiers - prev_bomb_identifiers
-
             if new_bomb_identifiers:
-                # Find the actual bomb object corresponding to the new identifier
                 new_bomb_identifier = new_bomb_identifiers.pop()
-                new_bomb = next((b for b in my_current_bombs if (b.position.x, b.position.y, b.explode_at) == new_bomb_identifier), None)
-
+                new_bomb = next((b for b in current_bombs if (b.position.x, b.position.y, b.explode_at) == new_bomb_identifier), None)
+                
                 if new_bomb:
                     strategic_value = 0
-                    explosion_area = self._get_explosion_grids(new_bomb, frame)
-                    
+                    explosion_area = self._get_explosion_grids(new_bomb, current_frame)
                     enemy_grids = set()
-                    my_team_id = frame.my_player.team
-                    for other_player in frame.other_players:
-                        if other_player.team != my_team_id:
-                            for gx, gy in self.get_occupied_grids_from_position(other_player.position):
-                                enemy_grids.add((gx, gy))
-
+                    for p in current_frame.other_players:
+                        if p.team != current_frame.my_player.team:
+                            enemy_grids.update(self.get_occupied_grids_from_position(p.position))
+                    
                     for x, y in explosion_area:
-                        if frame.map[y][x].terrain == 'D':
+                        if current_frame.map[y][x].terrain == 'D':
                             strategic_value += 2
                         if (x, y) in enemy_grids:
                             strategic_value += 15
-                    
                     if strategic_value > 0:
                         reward += strategic_value
 
         # --- Penalties ---
-
-        # 1. Penalty for ineffective movement (bumping into walls)
-        # This happens if a move action was issued but the agent's position did not change.
         is_move_action = self.previous_action in [0, 1, 2, 3]
-        if prev_info['frame'] is not None and is_move_action and frame.my_player.position == prev_info['frame'].my_player.position:
-            reward -= 10  # Heavy penalty for bumping into a wall
+        # We need the raw previous frame for position comparison
+        previous_frame = self.raw_frame_history[0]
+        if is_move_action and current_frame.my_player.position == previous_frame.my_player.position:
+            reward -= 10
 
-        # 2. Penalty for intentionally standing still
-        # This penalty must be high to force the agent to explore.
-        # It should be comparable to the penalty for bumping into a wall.
-        if self.previous_action == 5: # Assuming 5 is the "STAY" action
-            reward -= 10 # Heavy penalty to discourage idling
+        if self.previous_action == 5:
+            reward -= 10
 
-        # 3. Small penalty per tick to encourage action and speed up the game.
         reward -= 0.1
 
-        # 4. Penalty for standing in a bomb's danger zone
-        # We need to check the player's occupied grids against the danger zones
-        player_grids = self.get_occupied_grids_from_position(frame.my_player.position)
-        danger_zones = self.get_danger_zones(frame)
-        is_in_danger = any(grid in danger_zones for grid in player_grids)
-        if is_in_danger:
-            reward -= 5 # Penalty for staying in a dangerous area
+        player_grids = self.get_occupied_grids_from_position(current_frame.my_player.position)
+        danger_zones = self.get_danger_zones(current_frame)
+        if any(grid in danger_zones for grid in player_grids):
+            reward -= 5
 
+        # --- Prepare new info for the next frame ---
         new_info = {
-            'frame': frame,
-            'my_territory': my_territory,
-            'enemy_territory': enemy_territory,
+            'my_territory': current_my_territory,
+            'enemy_territory': current_enemy_territory,
             'is_stunned': is_currently_stunned,
             'items_collected': current_items,
-            'my_bomb_identifiers': {(b.position.x, b.position.y, b.explode_at) for b in frame.bombs if b.owner_id == frame.my_player.id}
+            'my_bomb_identifiers': {(b.position.x, b.position.y, b.explode_at) for b in current_bombs}
         }
         return reward, new_info

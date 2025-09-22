@@ -7,9 +7,10 @@ import torch.optim as optim
 from model import DQN
 
 class DQNAgent:
-    def __init__(self, state_size, action_size):
+    def __init__(self, state_size, action_size, vector_size):
         self.state_size = state_size
         self.action_size = action_size
+        self.vector_size = vector_size
         self.memory = deque(maxlen=20000)
         
         self.gamma = 0.95
@@ -23,7 +24,7 @@ class DQNAgent:
         self.train_counter = 0
         # We reset epsilon every 20 games (~36000 steps).
         # This provides a 10-game "learning phase" and a 10-game "exploitation phase".
-        self.epsilon_reset_tick = 10800
+        self.epsilon_reset_tick = 7200
         
         if torch.backends.mps.is_available():
             self.device = torch.device("mps")
@@ -39,22 +40,23 @@ class DQNAgent:
         self.update_target_model()
 
     def _build_model(self):
-        return DQN(self.state_size, self.action_size)
+        return DQN(self.state_size, self.action_size, self.vector_size)
 
     def update_target_model(self):
         self.target_model.load_state_dict(self.model.state_dict())
 
-    def remember(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
+    def remember(self, visual_state, vector_state, action, reward, next_visual_state, next_vector_state, done):
+        self.memory.append((visual_state, vector_state, action, reward, next_visual_state, next_vector_state, done))
 
-    def choose_action(self, state):
+    def choose_action(self, visual_state, vector_state):
         if np.random.rand() <= self.epsilon:
             # If action is random, there are no Q-values to return
             return random.randrange(self.action_size), None
         
         with torch.no_grad():
-            state = state.to(self.device)
-            act_values = self.model(state)
+            visual_state = visual_state.to(self.device)
+            vector_state = vector_state.to(self.device)
+            act_values = self.model(visual_state, vector_state)
             # Return the best action and the Q-values for all actions
             return torch.argmax(act_values).item(), act_values
 
@@ -64,17 +66,19 @@ class DQNAgent:
             
         minibatch = random.sample(self.memory, batch_size)
         
-        states = torch.cat([s[0] for s in minibatch]).to(self.device)
-        actions = torch.tensor([s[1] for s in minibatch]).to(self.device)
-        rewards = torch.tensor([s[2] for s in minibatch]).to(self.device)
-        next_states = torch.cat([s[3] for s in minibatch]).to(self.device)
-        dones = torch.tensor([s[4] for s in minibatch]).to(self.device)
+        visual_states = torch.cat([s[0] for s in minibatch]).to(self.device)
+        vector_states = torch.cat([s[1] for s in minibatch]).to(self.device)
+        actions = torch.tensor([s[2] for s in minibatch]).to(self.device)
+        rewards = torch.tensor([s[3] for s in minibatch]).to(self.device)
+        next_visual_states = torch.cat([s[4] for s in minibatch]).to(self.device)
+        next_vector_states = torch.cat([s[5] for s in minibatch]).to(self.device)
+        dones = torch.tensor([s[6] for s in minibatch]).to(self.device)
 
         # Get Q-values for current states from the main model
-        current_q_values = self.model(states).gather(1, actions.unsqueeze(1))
+        current_q_values = self.model(visual_states, vector_states).gather(1, actions.unsqueeze(1))
 
         # Get max Q-values for next states from the target model
-        next_q_values = self.target_model(next_states).max(1)[0].detach()
+        next_q_values = self.target_model(next_visual_states, next_vector_states).max(1)[0].detach()
 
         # Compute the expected Q-values
         target_q_values = rewards + (self.gamma * next_q_values * (1 - dones.float()))

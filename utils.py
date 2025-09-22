@@ -128,7 +128,14 @@ def preprocess_frame(frame: data_models.Frame, view_size=11):
                 state[5, state_y, state_x] = 1.0
 
     # --- Populate object-based channels relative to our position ---
-    state[1, half_view, half_view] = 1.0
+    
+    # Channel 1: My Player's full body position
+    my_occupied_grids = get_occupied_grids(frame.my_player.position)
+    for gx, gy in my_occupied_grids:
+        rel_dx, rel_dy = gx - my_gx, gy - my_gy
+        if abs(rel_dx) <= half_view and abs(rel_dy) <= half_view:
+            state_x, state_y = rel_dx + half_view, rel_dy + half_view
+            state[1, state_y, state_x] = 1.0
 
     for p in frame.other_players:
         gx, gy = get_grid_position(p.position)
