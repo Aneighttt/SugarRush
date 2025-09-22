@@ -33,6 +33,7 @@ class GameAI:
             'is_stunned': False,
             'items_collected': 0,
             'my_bomb_identifiers': set(),
+            'last_action': -1, # Initialize with a non-action value
         }
         self.total_reward = 0
         self.current_loss = 0
@@ -355,12 +356,21 @@ class GameAI:
         if any(grid in danger_zones for grid in player_grids):
             reward -= 5
 
+        # --- Penalty for oscillating (e.g., moving left then right immediately) ---
+        last_action = prev_info.get('last_action', -1)
+        current_action = self.previous_action
+        # Define opposite actions: 0 (U) vs 1 (D), 2 (L) vs 3 (R)
+        opposites = {0: 1, 1: 0, 2: 3, 3: 2}
+        if opposites.get(last_action) == current_action:
+            reward -= 2 # Small penalty for dithering
+
         # --- Prepare new info for the next frame ---
         new_info = {
             'my_territory': current_my_territory,
             'enemy_territory': current_enemy_territory,
             'is_stunned': is_currently_stunned,
             'items_collected': current_items,
-            'my_bomb_identifiers': {(b.position.x, b.position.y, b.explode_at) for b in current_bombs}
+            'my_bomb_identifiers': {(b.position.x, b.position.y, b.explode_at) for b in current_bombs},
+            'last_action': self.previous_action # Pass the action from T-1 to T
         }
         return reward, new_info

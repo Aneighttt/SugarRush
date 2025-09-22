@@ -221,7 +221,7 @@ def preprocess_frame(frame: data_models.Frame, view_size=11):
             state[6, state_y, state_x] = 1.0
             
     # Channel 10: My player's invincibility status
-    if 'INVINCIBLE' in [s.name for s in frame.my_player.extra_status]:
+    if 'INV' in [s.name for s in frame.my_player.extra_status]:
         state[10, :, :] = 1.0
 
     # This is a placeholder for where the collision vector would be calculated.
