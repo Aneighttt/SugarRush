@@ -4,41 +4,11 @@ import numpy as np
 import queue
 from collections import deque
 import os
+import time
 
 from data_models import Frame
 from frame_processor import preprocess_observation_dict
 from reward import calculate_reward, count_territory
-
-# --- Debugging Helper ---
-def print_observation(obs, header=""):
-    """Formats and prints the observation dictionary for debugging."""
-    np.set_printoptions(precision=2, suppress=True, linewidth=120)
-    print(f"\n--- {header} (PID: {os.getpid()}) ---")
-    
-    # Print Player State
-    player_state = obs["player_state"]
-    print(f"Player State: {player_state}")
-
-    # Print Grid View (current frame's channels)
-    grid_view = obs["grid_view"]
-    current_grid_view = grid_view[12:, :, :] # Get the last 12 channels
-    
-    channel_names = [
-        "0: Terrain", "1: Bombs", "2: Danger Zone", "3: Item (Boots)",
-        "4: Item (Potion)", "5: Item (Bomb Pack)", "6: Accel Terrain",
-        "7: Decel Terrain", "8: Enemy Territory", "9: My Territory",
-        "10: My Player Pos", "11: Teammate Pos" # Assuming these are the last two channels
-    ]
-    
-    print("--- Grid View (Current Frame) ---")
-    for i, name in enumerate(channel_names):
-        channel = current_grid_view[i, :, :]
-        # Only print if the channel contains non-zero values
-        if np.any(channel):
-            print(f"Channel {name}:")
-            print(channel)
-
-    print("-----------------------------------\n")
 
 
 class BomberEnv(gym.Env):
@@ -54,7 +24,7 @@ class BomberEnv(gym.Env):
 
         self.action_space = spaces.Discrete(6)
         self.observation_space = spaces.Dict({
-            "grid_view": spaces.Box(low=0, high=1, shape=(12 * 2, 11, 11), dtype=np.float32),
+            "grid_view": spaces.Box(low=0, high=1, shape=(10 * 2, 11, 11), dtype=np.float32),
             "pixel_view": spaces.Box(low=0, high=1, shape=(2 * 2, 100, 100), dtype=np.float32),
             "player_state": spaces.Box(low=0, high=1, shape=(5,), dtype=np.float32)
         })
@@ -66,24 +36,18 @@ class BomberEnv(gym.Env):
         self.previous_frame_info = {}
 
     def _get_stacked_observation(self):
+        """Stacks the grid and pixel views from the last two observations."""
         prev_obs = self.observation_history[0]
         curr_obs = self.observation_history[-1]
-        
-        # Manually crop the 16x28 grid_view to an 11x11 view
-        # Assuming the center of the 16x28 view is where the player is.
-        # This is a placeholder logic, actual cropping might need adjustment.
-        center_h, center_w = 16 // 2, 28 // 2
-        half_view = 11 // 2
-        
-        def crop_view(grid):
-            return grid[:, center_h-half_view:center_h+half_view+1, center_w-half_view:center_w+half_view+1]
 
-        cropped_prev_grid = crop_view(prev_obs["grid_view"])
-        cropped_curr_grid = crop_view(curr_obs["grid_view"])
+        # The grid_view is already an 11x11 view centered on the player.
+        # No cropping is needed here.
+        stacked_grid_view = np.concatenate([prev_obs["grid_view"], curr_obs["grid_view"]], axis=0)
+        stacked_pixel_view = np.concatenate([prev_obs["pixel_view"], curr_obs["pixel_view"]], axis=0)
 
         return {
-            "grid_view": np.concatenate([cropped_prev_grid, cropped_curr_grid], axis=0),
-            "pixel_view": np.concatenate([prev_obs["pixel_view"], curr_obs["pixel_view"]], axis=0),
+            "grid_view": stacked_grid_view,
+            "pixel_view": stacked_pixel_view,
             "player_state": curr_obs["player_state"]
         }
 
@@ -106,12 +70,17 @@ class BomberEnv(gym.Env):
             'last_action': -1
         }
         stacked_observation = self._get_stacked_observation()
-        print_observation(stacked_observation, header=f"RESET - Player {initial_frame.my_player.id}")
+        #print_observation(stacked_observation, header=f"RESET - Player {initial_frame.my_player.id}")
         return stacked_observation, {}
 
     def step(self, action: int):
+        step_start_time = time.time()
         self.action_queue.put(action)
+        
+        # This call blocks until a frame is put into the queue by the web server thread
         current_frame = self.frame_queue.get()
+        after_get_frame_time = time.time()
+
         new_observation = preprocess_observation_dict(current_frame)
         self.observation_history.append(new_observation)
         self.raw_frame_history.append(current_frame)
@@ -120,7 +89,22 @@ class BomberEnv(gym.Env):
         self.previous_frame_info = new_frame_info
         done = current_frame.current_tick == 1800
         stacked_observation = self._get_stacked_observation()
-        print_observation(stacked_observation, header=f"STEP - Player {current_frame.my_player.id} Tick {current_frame.current_tick}")
+        #print_observation(stacked_observation, header=f"STEP - Player {current_frame.my_player.id} Tick {current_frame.current_tick}")
+        
+        step_end_time = time.time()
+
+        # --- Detailed Step Timing Logs ---
+        wait_for_frame_duration = (after_get_frame_time - step_start_time) * 1000
+        processing_duration = (step_end_time - after_get_frame_time) * 1000
+        total_step_duration = (step_end_time - step_start_time) * 1000
+        
+        print(
+            f"[Env Step | Player {current_frame.my_player.id}] "
+            f"Total: {total_step_duration:.2f}ms | "
+            f"WaitingForFrame: {wait_for_frame_duration:.2f}ms | "
+            f"Processing: {processing_duration:.2f}ms"
+        )
+
         return stacked_observation, reward, done, False, {}
 
     def put_frame(self, frame):

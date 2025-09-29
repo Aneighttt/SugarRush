@@ -1,5 +1,5 @@
 from data_models import Frame
-from utils import MAP_WIDTH, MAP_HEIGHT
+from config import *
 
 def count_territory(frame: Frame):
     my_territory = 0
@@ -16,7 +16,6 @@ def count_territory(frame: Frame):
     return my_territory, enemy_territory
 
 def get_occupied_grids_from_position(pixel_pos):
-    PIXEL_PER_CELL = 50
     center_x, center_y = pixel_pos.x, pixel_pos.y
     min_x, max_x = center_x - 25, center_x + 24
     min_y, max_y = center_y - 25, center_y + 24

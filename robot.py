@@ -4,14 +4,20 @@ import atexit
 import os
 import threading
 from stable_baselines3.common.env_util import make_vec_env
-
+from frame_processor import preprocess_observation_dict
 from data_models import Frame
 from agent import SB3_DQNAgent
 from environment import BomberEnv
 import gymnasium as gym
 import sys
+import random
 sys.modules["gym"] =gym
 app = Flask(__name__)
+
+# Suppress the default Flask request logs
+import logging
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
 # --- Environment and Agent Management ---
 # We use a VecEnv to handle multiple environments (one for each player).
@@ -30,7 +36,7 @@ except FileNotFoundError:
 player_to_env_map = {}
 next_env_idx = 0
 global_lock = threading.Lock()
-
+from utils import *
 from stable_baselines3.common.callbacks import BaseCallback
 
 class PrintCallback(BaseCallback):
@@ -67,11 +73,14 @@ training_thread.start()
 
 @app.route("/api/v1/command", methods=["POST"])
 def handle_command():
-    start = time.time()
+    start_time = time.time()
+    
     global next_env_idx
     data = request.get_json()
     frame = Frame(data)
     player_id = frame.my_player.id
+
+    # --- Player to Environment Mapping ---
     if player_id not in player_to_env_map:
         with global_lock:
             if player_id not in player_to_env_map:
@@ -79,20 +88,21 @@ def handle_command():
                     return jsonify({"error": "Max number of players reached"}), 500
                 player_to_env_map[player_id] = next_env_idx
                 next_env_idx += 1
-    
     env_idx = player_to_env_map[player_id]
 
-    # --- Data Flow ---
-    # 1. Send the frame to the correct sub-environment's process
-    #print(f"[Main] Sending frame {frame.current_tick} to env {env_idx} for player {player_id}")
-    vec_env.env_method('put_frame', frame, indices=[env_idx])
+    processed_frame = preprocess_observation_dict(frame)
+    if(player_id==3):
+        print_observation(processed_frame, 2)
+        print_pixel_view_terminal(processed_frame["pixel_view"], downsample_factor=2)
+    #vec_env.env_method('put_frame', frame, indices=[env_idx])
+    after_put_frame_time = time.time()
 
-    # 2. Get the action from the correct sub-environment's process
-    #print(f"[Main] Waiting for action from env {env_idx} for player {player_id}...")
-    action = vec_env.env_method('get_action', indices=[env_idx])[0]
-    #print(f"[Main] Got action {action} from env {env_idx} for player {player_id}")
+    # 2. Get the action from the correct sub-environment's process (this is a blocking call)
+    #action = vec_env.env_method('get_action', indices=[env_idx])[0]
+    after_get_action_time = time.time()
 
     # --- Translate action to game command ---
+    action = 0
     direction = "N"
     is_place_bomb = False
     if action == 0: direction = "U"
@@ -105,15 +115,31 @@ def handle_command():
             is_place_bomb = True
     
     speed = 10 + frame.my_player.agility_boots_count * 2
-    
+    direction = random.choice(["U", "D", "L", "R", "N"])
+    is_place_bomb = random.choice([True, False])
+
     response_data = {
         "direction": direction,
         "is_place_bomb": is_place_bomb,
         "stride": speed
     }
-    end = time.time()
-    elapsed_ms = (end - start) * 1000
-    print(f"训练总耗时: {elapsed_ms:.2f} ms")
+    
+    end_time = time.time()
+
+    # --- Detailed Timing Logs ---
+    put_frame_duration = (after_put_frame_time - start_time) * 1000
+    get_action_duration = (after_get_action_time - after_put_frame_time) * 1000
+    response_prep_duration = (end_time - after_get_action_time) * 1000
+    total_duration = (end_time - start_time) * 1000
+    
+    # print(
+    #     f"[Player {player_id} | Env {env_idx}] "
+    #     f"Total: {total_duration:.2f}ms | "
+    #     f"PutFrame: {put_frame_duration:.2f}ms | "
+    #     f"GetAction: {get_action_duration:.2f}ms | "
+    #     f"ResponsePrep: {response_prep_duration:.2f}ms"
+    # )
+    
     return jsonify(response_data)
 
 @app.route("/api/v1/ping", methods=["HEAD"])
@@ -127,4 +153,4 @@ def on_exit():
 atexit.register(on_exit)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5002, debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=5002, debug=False, threaded=False)
