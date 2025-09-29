@@ -1,4 +1,6 @@
 __pycache__/
 demo/
-logs/
+log/
 .DS_STORE
+logs/
+.idea/
