@@ -10,8 +10,8 @@ try:
         # 获取当前鼠标位置
         x, y = pyautogui.position()
         # 在当前位置点击鼠标左键
-        x = 1425
-        y = 684
+        x = 1284
+        y = 568
         pyautogui.click(x, y)
         time.sleep(1)
         pyautogui.click(x, y)

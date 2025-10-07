@@ -10,7 +10,7 @@ def handle_command():
     direction = random.choice(["U", "D", "L", "R", "N"])
     place_bomb = random.choice([True, False])
     response_data = {
-        "direction": 'N',
+        "direction": direction,
         "is_place_bomb": False,
     }
     return jsonify(response_data)

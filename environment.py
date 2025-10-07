@@ -5,10 +5,14 @@ import queue
 from collections import deque
 import os
 import time
-
+import logging
+from torch.utils.tensorboard import SummaryWriter
 from data_models import Frame
 from frame_processor import preprocess_observation_dict
 from reward import calculate_reward, count_territory
+
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 class BomberEnv(gym.Env):
@@ -24,91 +28,69 @@ class BomberEnv(gym.Env):
 
         self.action_space = spaces.Discrete(6)
         self.observation_space = spaces.Dict({
-            "grid_view": spaces.Box(low=0, high=1, shape=(10 * 2, 11, 11), dtype=np.float32),
+            "grid_view": spaces.Box(low=0, high=1, shape=(11 * 2, 11, 11), dtype=np.float32),
             "pixel_view": spaces.Box(low=0, high=1, shape=(2 * 2, 100, 100), dtype=np.float32),
-            "player_state": spaces.Box(low=0, high=1, shape=(5,), dtype=np.float32)
+            "player_state": spaces.Box(low=0, high=1, shape=(5 * 2,), dtype=np.float32)
         })
 
-        self.frame_queue = queue.Queue()
-        self.action_queue = queue.Queue()
-        self.observation_history = deque(maxlen=2)
-        self.raw_frame_history = deque(maxlen=2)
-        self.previous_frame_info = {}
-
-    def _get_stacked_observation(self):
-        """Stacks the grid and pixel views from the last two observations."""
-        prev_obs = self.observation_history[0]
-        curr_obs = self.observation_history[-1]
-
-        # The grid_view is already an 11x11 view centered on the player.
-        # No cropping is needed here.
-        stacked_grid_view = np.concatenate([prev_obs["grid_view"], curr_obs["grid_view"]], axis=0)
-        stacked_pixel_view = np.concatenate([prev_obs["pixel_view"], curr_obs["pixel_view"]], axis=0)
-
-        return {
-            "grid_view": stacked_grid_view,
-            "pixel_view": stacked_pixel_view,
-            "player_state": curr_obs["player_state"]
-        }
+        self.frame_queue = queue.Queue(maxsize=1000)
+        # self.writer = SummaryWriter(log_dir="runs/reward_logs")
+        self.num_steps = 0
+        self.all_reward_keys = [
+            'territory_diff', 'capture_tile', 'win', 'lose', 'stun', 'item_collect',
+            'bomb_strategy', 'not_moving', 'do_nothing', 'living_penalty',
+            'move_towards_frontier', 'enter_danger_zone', 'exit_danger_zone',
+            'staying_in_danger', 'move_towards_safety', 'follow_gradient_direction'
+        ]
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
-        initial_frame = self.frame_queue.get()
-        initial_observation = preprocess_observation_dict(initial_frame)
-        self.observation_history.clear()
-        self.raw_frame_history.clear()
-        self.observation_history.append(initial_observation)
-        self.observation_history.append(initial_observation)
-        self.raw_frame_history.append(initial_frame)
-        self.raw_frame_history.append(initial_frame)
-        my_territory, enemy_territory = count_territory(initial_frame)
-        self.previous_frame_info = {
-            'my_territory': my_territory, 'enemy_territory': enemy_territory,
-            'is_stunned': (initial_frame.my_player.status == 'D'),
-            'items_collected': initial_frame.my_player.bomb_pack_count + initial_frame.my_player.sweet_potion_count + initial_frame.my_player.agility_boots_count,
-            'my_bomb_identifiers': {(b.position.x, b.position.y, b.explode_at) for b in initial_frame.bombs if b.owner_id == initial_frame.my_player.id},
-            'last_action': -1
-        }
-        stacked_observation = self._get_stacked_observation()
-        #print_observation(stacked_observation, header=f"RESET - Player {initial_frame.my_player.id}")
-        return stacked_observation, {}
+        logging.info("Resetting environment and clearing frame queue.")
+        
+        # Clear any stale frames from the previous episode
+        if not self.frame_queue.empty():
+            l = self.frame_queue.qsize()
+            print("{}".format(l))
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+            except queue.Empty:
+                continue
+        
+        # Block and wait for the first frame of the new episode
+        obs, next_obs, raw_obs, next_raw_obs, real_action = self.frame_queue.get()
+        
+        # The first observation of a new episode is next_obs
+        return next_obs, {}
 
     def step(self, action: int):
         step_start_time = time.time()
-        self.action_queue.put(action)
+        obs, next_obs, raw_obs, next_raw_obs, real_action = self.frame_queue.get()
         
-        # This call blocks until a frame is put into the queue by the web server thread
-        current_frame = self.frame_queue.get()
-        after_get_frame_time = time.time()
+        reward_dict = calculate_reward(raw_obs, next_raw_obs, real_action)
+        total_reward = sum(reward_dict.values())
 
-        new_observation = preprocess_observation_dict(current_frame)
-        self.observation_history.append(new_observation)
-        self.raw_frame_history.append(current_frame)
-        previous_frame = self.raw_frame_history[0]
-        reward, new_frame_info = calculate_reward(current_frame, previous_frame, self.previous_frame_info, action)
-        self.previous_frame_info = new_frame_info
-        done = current_frame.current_tick == 1800
-        stacked_observation = self._get_stacked_observation()
-        #print_observation(stacked_observation, header=f"STEP - Player {current_frame.my_player.id} Tick {current_frame.current_tick}")
+        # Create a full reward dictionary for logging and printing
+        full_reward_dict = {key: reward_dict.get(key, 0.0) for key in self.all_reward_keys}
         
-        step_end_time = time.time()
+        #print(f"Step {self.num_steps}, TotalReward: {total_reward} Rewards: {full_reward_dict}")
 
-        # --- Detailed Step Timing Logs ---
-        wait_for_frame_duration = (after_get_frame_time - step_start_time) * 1000
-        processing_duration = (step_end_time - after_get_frame_time) * 1000
-        total_step_duration = (step_end_time - step_start_time) * 1000
+        # if reward_dict:
+        #     # logging.info(f"Reward details: {reward_dict}")
+        #     for key, value in reward_dict.items():
+        #         self.writer.add_scalar(f'Reward/{key}', value, self.num_steps)
+        #     self.writer.add_scalar('Reward/Total', total_reward, self.num_steps)
         
-        print(
-            f"[Env Step | Player {current_frame.my_player.id}] "
-            f"Total: {total_step_duration:.2f}ms | "
-            f"WaitingForFrame: {wait_for_frame_duration:.2f}ms | "
-            f"Processing: {processing_duration:.2f}ms"
-        )
+        self.num_steps += 1
+        
+        terminated = (next_raw_obs.current_tick >= 1800)
+        truncated = False
 
-        return stacked_observation, reward, done, False, {}
+        return next_obs, total_reward, terminated, truncated,  {"real_action": real_action, "reward_dict": full_reward_dict}
 
-    def put_frame(self, frame):
-        self.frame_queue.put(frame)
+    def put_frame_pair(self, obs, next_obs, raw_obs, next_raw_obs, action):
+        self.frame_queue.put((obs, next_obs, raw_obs, next_raw_obs, action))
 
-    def get_action(self):
-        return self.action_queue.get()
+    def close(self):
+        # This method is kept for API consistency, but no longer needs to close a file.
+        pass

@@ -4,6 +4,8 @@
 import numpy as np
 from data_models import Frame
 from config import *
+from utils import visualize_gradient_in_terminal
+import collections
 
 ## pixel_view 
 ## 1 地图障碍物 （3*50） * （3*50） pixelgrid
@@ -15,40 +17,41 @@ def pixels_to_grid(pixel_x: int, pixel_y: int) -> tuple[int, int]:
 
 def create_pixel_view(frame: Frame, grid_view: np.ndarray) -> np.ndarray:
     """
-    Creates a high-resolution pixel view by sampling from the pre-calculated grid view,
-    ensuring consistency between the two representations.
+    Creates a high-resolution pixel view by sampling from the pre-calculated grid view.
+    This function is optimized using NumPy vectorization to avoid Python loops.
     """
-    pixel_view = np.zeros((PIXEL_CHANNELS, PIXEL_VIEW_SIZE, PIXEL_VIEW_SIZE), dtype=np.float32)
+    # 1. Generate coordinate grids for the entire pixel view
+    vx_px_arr, vy_px_arr = np.meshgrid(np.arange(PIXEL_VIEW_SIZE), np.arange(PIXEL_VIEW_SIZE))
+
+    # 2. Calculate absolute world pixel coordinates for the entire view
     player_pixel_pos = frame.my_player.position
     view_half_size = PIXEL_VIEW_SIZE // 2
-
-    # The top-left corner of the pixel view in absolute world coordinates
     view_min_x_px = player_pixel_pos.x - view_half_size
     view_min_y_px = player_pixel_pos.y - view_half_size
     
-    # Player's grid position, used to map world grid to view grid
+    abs_px_x_arr = view_min_x_px + vx_px_arr
+    abs_px_y_arr = view_min_y_px + vy_px_arr
+
+    # 3. Convert world pixel coordinates to world grid coordinates
+    world_gx_arr, world_gy_arr = pixels_to_grid(abs_px_x_arr, abs_px_y_arr)
+
+    # 4. Convert world grid coordinates to 11x11 view grid coordinates
     player_grid_x, player_grid_y = pixels_to_grid(player_pixel_pos.x, player_pixel_pos.y)
     view_center_gx, view_center_gy = 5, 5
+    
+    view_gx_arr = world_gx_arr - player_grid_x + view_center_gx
+    view_gy_arr = world_gy_arr - player_grid_y + view_center_gy
 
-    # Iterate through each pixel of the view
-    for vy_px in range(PIXEL_VIEW_SIZE):
-        for vx_px in range(PIXEL_VIEW_SIZE):
-            # Absolute world coordinate of the current pixel
-            abs_px_x = view_min_x_px + vx_px
-            abs_px_y = view_min_y_px + vy_px
-            
-            # Grid coordinate in the world map
-            world_gx, world_gy = pixels_to_grid(abs_px_x, abs_px_y)
-            
-            # Corresponding coordinate in the 11x11 grid_view
-            view_gx = world_gx - player_grid_x + view_center_gx
-            view_gy = world_gy - player_grid_y + view_center_gy
-            
-            # Directly sample from the grid_view.
-            # The logic assumes that any coordinate that would be out of bounds
-            # in the grid_view has already been correctly handled during grid_view's creation.
-            pixel_view[0, vy_px, vx_px] = grid_view[0, view_gy, view_gx]
-            pixel_view[1, vy_px, vx_px] = grid_view[2, view_gy, view_gx]
+    # 5. Clip coordinates to be within the bounds of grid_view [0, 10] to prevent indexing errors.
+    # This is a safe implementation detail that doesn't change the logic, as grid_view
+    # has already handled out-of-bounds values at its edges.
+    view_gx_arr = np.clip(view_gx_arr, 0, VIEW_SIZE - 1)
+    view_gy_arr = np.clip(view_gy_arr, 0, VIEW_SIZE - 1)
+
+    # 6. Use advanced indexing to sample from grid_view in a single operation
+    pixel_view = np.zeros((PIXEL_CHANNELS, PIXEL_VIEW_SIZE, PIXEL_VIEW_SIZE), dtype=np.float32)
+    pixel_view[0] = grid_view[0, view_gy_arr, view_gx_arr]
+    pixel_view[1] = grid_view[2, view_gy_arr, view_gx_arr]
                     
     return pixel_view
 
@@ -70,13 +73,13 @@ def create_grid_view(frame: Frame) -> np.ndarray:
     Creates the 11x11 tactical grid view centered on the player.
     """
     current_tick = frame.current_tick
-    grid_view = np.zeros((MAP_CHANNELS, MAP_HEIGHT, MAP_WIDTH), dtype=np.float32)
+    grid_view = np.zeros((MAP_CHANNELS, VIEW_SIZE, VIEW_SIZE), dtype=np.float32)
     player_grid_x, player_grid_y = pixels_to_grid(frame.my_player.position.x, frame.my_player.position.y)
     view_center_x, view_center_y = 5, 5
 
     # Channel 0: Terrain
-    for view_y in range(MAP_HEIGHT):
-        for view_x in range(MAP_WIDTH):
+    for view_y in range(VIEW_SIZE):
+        for view_x in range(VIEW_SIZE):
             map_x = player_grid_x + (view_x - view_center_x)
             map_y = player_grid_y + (view_y - view_center_y)
             if 0 <= map_y < 16 and 0 <= map_x < 28:
@@ -93,7 +96,7 @@ def create_grid_view(frame: Frame) -> np.ndarray:
         view_x = bomb.position.x - player_grid_x + view_center_x
         view_y = bomb.position.y - player_grid_y + view_center_y
 
-        if 0 <= view_x < MAP_WIDTH and 0 <= view_y < MAP_HEIGHT:
+        if 0 <= view_x < VIEW_SIZE and 0 <= view_y < VIEW_SIZE:
             grid_view[1, view_y, view_x] = 1.0
 
     # Channel 2: Danger Zone (with comprehensive chain reaction simulation)
@@ -112,7 +115,7 @@ def create_grid_view(frame: Frame) -> np.ndarray:
                 for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
                     for i in range(1, bomb.range + 1):
                         nx, ny = bomb.position.x + dx * i, bomb.position.y + dy * i
-                        if not (0 <= ny < 16 and 0 <= nx < 28): break
+                        if not (0 <= ny < MAP_HEIGHT and 0 <= nx < MAP_WIDTH): break
                         if (nx, ny) in bombs_by_pos:
                             chained_bomb = bombs_by_pos[(nx, ny)]
                             if chained_bomb in unvisited_bombs:
@@ -124,24 +127,33 @@ def create_grid_view(frame: Frame) -> np.ndarray:
             first_tick = min(b.explode_at for b in chain['bombs'])
             # Correctly calculate remaining ticks until explosion
             time_to_explosion = max(0.0, first_tick - current_tick)
-            chain['danger_value'] = 2.0 / (1.0 + time_to_explosion)
+            chain['danger_value'] = 1.0 / (1.0 + time_to_explosion)
             all_explosion_chains.append(chain)
 
             for bomb in chain['bombs']:
                 view_x = bomb.position.x - player_grid_x + view_center_x
                 view_y = bomb.position.y - player_grid_y + view_center_y
-                if 0 <= view_x < MAP_WIDTH and 0 <= view_y < MAP_HEIGHT:
+                if 0 <= view_x < VIEW_SIZE and 0 <= view_y < VIEW_SIZE:
                     grid_view[2, view_y, view_x] = max(grid_view[2, view_y, view_x], chain['danger_value'])
                 for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
                     for i in range(1, bomb.range + 1):
                         nx, ny = bomb.position.x + dx * i, bomb.position.y + dy * i
-                        if not (0 <= ny < 16 and 0 <= nx < 28): break
+                        if not (0 <= ny < MAP_HEIGHT and 0 <= nx < MAP_WIDTH): break
                         if frame.map[ny][nx].terrain in ['I', 'N', 'D']: break
                         view_nx = nx - player_grid_x + view_center_x
                         view_ny = ny - player_grid_y + view_center_y
-                        if 0 <= view_nx < MAP_WIDTH and 0 <= view_ny < MAP_HEIGHT:
+                        if 0 <= view_nx < VIEW_SIZE and 0 <= view_ny < VIEW_SIZE:
                             grid_view[2, view_ny, view_nx] = max(grid_view[2, view_ny, view_nx], chain['danger_value'])
-                        
+        
+        if DEBUG_DANGER_ZONE:
+            # Check if there is any danger to print.
+            if np.any(grid_view[2] > 0):
+                print(f"--- Danger Zone (Tick: {current_tick}) ---")
+                # Flip the array vertically to display with (0,0) at the bottom-left.
+                flipped_danger_zone = np.flipud(grid_view[2])
+                # Use np.round to make the output cleaner.
+                print(np.round(flipped_danger_zone, 2))
+                print("------------------------------------")
 
     
     # Channels 3, 4, 5: Items (One-Hot Encoded)
@@ -149,7 +161,7 @@ def create_grid_view(frame: Frame) -> np.ndarray:
         view_x = item.position.x - player_grid_x + view_center_x
         view_y = item.position.y - player_grid_y + view_center_y
         
-        if 0 <= view_x < MAP_WIDTH and 0 <= view_y < MAP_HEIGHT:
+        if 0 <= view_x < VIEW_SIZE and 0 <= view_y < VIEW_SIZE:
             if item.type == 'AB':
                 grid_view[3, view_y, view_x] = 1.0
             elif item.type == 'SP':
@@ -158,8 +170,8 @@ def create_grid_view(frame: Frame) -> np.ndarray:
                 grid_view[5, view_y, view_x] = 1.0
 
     # Channels 6-9: Special Terrains and Occupied Zones
-    for view_y in range(MAP_HEIGHT):
-        for view_x in range(MAP_WIDTH):
+    for view_y in range(VIEW_SIZE):
+        for view_x in range(VIEW_SIZE):
             map_x = player_grid_x + (view_x - view_center_x)
             map_y = player_grid_y + (view_y - view_center_y)
             
@@ -173,12 +185,95 @@ def create_grid_view(frame: Frame) -> np.ndarray:
                     grid_view[7, view_y, view_x] = 1.0
                 
                 # Channel 8, 9: Occupied Zones (Separated)
-                if cell.ownership != 'N' and  cell.ownership != frame.my_player.team:
-                    grid_view[8, view_y, view_x] = 1.0 # Enemy occupied
+                if cell.ownership != 'N' and cell.ownership != frame.my_player.team:
+                    grid_view[8, view_y, view_x] = 1.0  # Enemy occupied
                 elif cell.ownership == 'N':
-                    grid_view[9, view_y, view_x] = 1.0 # Self occupied
+                    grid_view[9, view_y, view_x] = 1.0  # non occupied
 
-    # TODO: Implement logic for channels 10-11 here
+    # Channel 10: Gradient field based on the player's described BFS algorithm.
+    
+    # 1. Create full-map representations from the frame data.
+    full_map_walkable = np.ones((MAP_HEIGHT, MAP_WIDTH), dtype=bool)
+    full_map_self_occupied = np.zeros((MAP_HEIGHT, MAP_WIDTH), dtype=bool)
+    for r in range(MAP_HEIGHT):
+        for c in range(MAP_WIDTH):
+            cell = frame.map[r][c]
+            if cell.terrain in ['I', 'N', 'D']:
+                full_map_walkable[r, c] = False
+            if cell.ownership == frame.my_player.team:
+                full_map_self_occupied[r, c] = True
+                       
+    player_grid_x, player_grid_y = pixels_to_grid(frame.my_player.position.x, frame.my_player.position.y)
+
+    # 2. Find the shortest path from the player to the first non-self-occupied tile.
+    q = collections.deque([(player_grid_y, player_grid_x)])
+    visited = set([(player_grid_y, player_grid_x)])
+    path = {}
+    target = None
+
+   
+    found_target = False
+    while q:
+        r, c = q.popleft()
+        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+
+            if 0 <= nr < MAP_HEIGHT and 0 <= nc < MAP_WIDTH and (nr, nc) not in visited and full_map_walkable[nr, nc]:
+                visited.add((nr, nc))
+                path[(nr, nc)] = (r, c)
+                q.append((nr, nc))
+                if not full_map_self_occupied[nr, nc]:
+                    target = (nr, nc)
+                    found_target = True
+                    break
+        if found_target:
+            break
+
+    # 3. If a path is found, create the gradient.
+    full_gradient_map = np.full((MAP_HEIGHT, MAP_WIDTH), -1.0, dtype=np.float32)
+    if target:
+        # Reconstruct the path from target to player
+        reconstructed_path = []
+        curr = target
+        while curr in path:
+            reconstructed_path.append(curr)
+            curr = path[curr]
+        reconstructed_path.append((player_grid_y, player_grid_x))
+        reconstructed_path.reverse()
+
+        # Fill the gradient map along the path
+        path_len = len(reconstructed_path)
+        if path_len > 1:
+            for i, (r, c) in enumerate(reconstructed_path):
+                # The gradient now starts at 1.0 at the target and decreases towards the player.
+                gradient_value = 1.0 - ((path_len - 1 - i) / (path_len - 1))
+                full_gradient_map[r, c] = gradient_value
+        elif path_len == 1:
+            r, c = reconstructed_path[0]
+            full_gradient_map[r, c] = 1.0
+
+    # 4. Sample the 11x11 view from the full gradient map.
+    view_y_arr, view_x_arr = np.meshgrid(np.arange(VIEW_SIZE), np.arange(VIEW_SIZE), indexing='ij')
+    map_x_arr = player_grid_x + (view_x_arr - view_center_x)
+    map_y_arr = player_grid_y + (view_y_arr - view_center_y)
+
+    map_x_arr_clipped = np.clip(map_x_arr, 0, MAP_WIDTH - 1)
+    map_y_arr_clipped = np.clip(map_y_arr, 0, MAP_HEIGHT - 1)
+    
+    sampled_gradients = full_gradient_map[map_y_arr_clipped, map_x_arr_clipped]
+    
+    # Convert -1 (no gradient) to 0 for the model input
+    sampled_gradients[sampled_gradients == -1.0] = 0.0
+    
+    out_of_bounds_mask = (map_x_arr < 0) | (map_x_arr >= MAP_WIDTH) | \
+                         (map_y_arr < 0) | (map_y_arr >= MAP_HEIGHT)
+    sampled_gradients[out_of_bounds_mask] = 0.0
+    grid_view[10] = sampled_gradients
+
+    # --- DEBUG VISUALIZATION ---
+    if DEBUG_VISUALIZE_GRADIENT and frame.my_player.id == 4:
+        visualize_gradient_in_terminal(sampled_gradients, frame)
 
     return grid_view
 
@@ -192,7 +287,8 @@ def create_player_state(frame: Frame) -> np.ndarray:
     current_bomb_count = sum(1 for bomb in frame.bombs if bomb.owner_id == player.id)
     
     # 2. Calculate real bomb range
-    bomb_range = BASE_RANGE + player.sweet_potion_count * RANGE_PER_POTION
+    # sweet_potion_count starts at 1 and includes the base range.
+    bomb_range = player.sweet_potion_count * RANGE_PER_POTION
     
     # 3. Calculate base speed
     speed = BASE_SPEED + player.agility_boots_count * SPEED_PER_BOOT
@@ -225,11 +321,15 @@ def create_player_state(frame: Frame) -> np.ndarray:
     elif on_deceleration:
         speed /= 2.0
         
+    # Clip bomb_range before normalization to ensure it doesn't exceed MAX_RANGE,
+    # as the actual max possible range is (1 + MAX_POTION) * RANGE_PER_POTION.
+    normalized_bomb_range = np.clip(bomb_range, 0, MAX_RANGE) / MAX_RANGE
+
     return np.array([
         player.bomb_pack_count / MAX_BOMB_PACK,
-        bomb_range / MAX_RANGE,
+        normalized_bomb_range,
         speed / MAX_SPEED,
-        current_bomb_count / MAX_CURRENT_BOMBS,
+        1.0 if current_bomb_count < player.bomb_pack_count else 0.0,
         1.0 if player.status == 'D' else 0.0
     ], dtype=np.float32)
 
