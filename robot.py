@@ -40,7 +40,6 @@ n_envs = 2
 
 player_raw_frame = collections.defaultdict(lambda: collections.deque(maxlen=2))
 player_processed_frame = collections.defaultdict(lambda: collections.deque(maxlen=2))
-player_stacked_frame = collections.defaultdict(lambda: collections.deque(maxlen=2))
 player_action = collections.defaultdict(lambda: collections.deque(maxlen=2))
 
 # --- Per-Player Caches for Pathfinding ---
@@ -227,22 +226,6 @@ else:
     print("\n--- RUNNING IN PURE PREDICTION MODE - TRAINING IS DISABLED ---\n")
 
 
-def _get_stacked_observation(q):
-    """Stacks the grid and pixel views from the last two observations."""
-    prev_obs = q[0]
-    curr_obs = q[-1]
-
-    # The grid_view is already an 11x11 view centered on the player.
-    # No cropping is needed here.
-    stacked_grid_view = np.concatenate([prev_obs["grid_view"], curr_obs["grid_view"]], axis=0)
-    stacked_pixel_view = np.concatenate([prev_obs["pixel_view"], curr_obs["pixel_view"]], axis=0)
-    stacked_player_view = np.concatenate([prev_obs["player_state"], curr_obs["player_state"]], axis=0)
-    return {
-        "grid_view": stacked_grid_view,
-        "pixel_view": stacked_pixel_view,
-        "player_state": stacked_player_view
-    }
-
 @app.route("/api/v1/command", methods=["POST"])
 def handle_command():
     timings = {}
@@ -298,28 +281,24 @@ def handle_command():
     player_raw_frame[frame.my_player.id].append(frame)
     player_processed_frame[frame.my_player.id].append(processed_frame)
 
-
-    stacked_frame = _get_stacked_observation(player_processed_frame[player_id])
-    player_stacked_frame[frame.my_player.id].append(stacked_frame)
-
-    timings["stack_frames"] = (time.time() - last_time) * 1000
-    last_time = time.time()
-
-    action = prediction_agent.choose_action(stacked_frame, deterministic=PURE_PREDICTION_MODE)
-    #logging.info(f"Player {player_id} chose action: {action}")
+    # Use the current processed frame directly for decision making
+    current_obs = player_processed_frame[player_id][-1]
+    
+    action = prediction_agent.choose_action(current_obs, deterministic=PURE_PREDICTION_MODE)
     player_action[frame.my_player.id].append(action)
 
     timings["choose_action"] = (time.time() - last_time) * 1000
     last_time = time.time()
 
-    if not PURE_PREDICTION_MODE:
+    # Pass the previous and current frames (both raw and processed) to the environment
+    if not PURE_PREDICTION_MODE and len(player_raw_frame[player_id]) > 1:
         train_vec_env.env_method(
             'put_frame_pair',
-            player_stacked_frame[player_id][0],  # prev_stacked_obs
-            player_stacked_frame[player_id][-1],  # curr_stacked_obs
-            player_raw_frame[player_id][0],      # prev_raw_obs
-            player_raw_frame[player_id][-1],      # curr_raw_obs
-            player_action[player_id][0],         # action_taken_at_prev_obs
+            player_processed_frame[player_id][0],  # Previous processed obs (P_T-1)
+            player_processed_frame[player_id][1],  # Current processed obs (P_T)
+            player_raw_frame[player_id][0],        # Previous raw frame (T-1)
+            player_raw_frame[player_id][1],        # Current raw frame (T)
+            player_action[player_id][0],           # Action taken at previous obs (A_T-1)
             indices=[env_idx]
         )
     

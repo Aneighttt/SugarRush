@@ -224,10 +224,7 @@ def calculate_reward(previous_frame: Frame, current_frame: Frame, previous_actio
 
     # --- 11. Reward/Penalty for Entering/Exiting Danger Zone ---
     # Use the pre-calculated danger map from the agent's observation
-    # The passed `previous_processed_obs` is the stacked observation.
-    # We need the most recent half, which is the second part.
-    prev_grid_view = previous_processed_obs['grid_view']
-    danger_map = prev_grid_view[11 + 2, :, :] # Channel 2 of the most recent unstacked view
+    danger_map = previous_processed_obs['grid_view'][2, :, :] # Channel 2 for single frame
 
     prev_player_grids = set(get_occupied_grids_from_position(previous_frame.my_player.position))
     curr_player_grids = set(get_occupied_grids_from_position(current_frame.my_player.position))
@@ -272,11 +269,11 @@ def calculate_reward(previous_frame: Frame, current_frame: Frame, previous_actio
         # need to move through another dangerous square to reach the nearest safe exit.
         # It rewards any move that demonstrably reduces the distance to safety.
         if previous_action in [0, 1, 2, 3]: # If the agent tried to move
-            # Use the observation the agent made its decision on
-            grid_view_unstacked = previous_processed_obs['grid_view'][11:, :, :]
+            # Use the single-frame observation the agent made its decision on
+            grid_view = previous_processed_obs['grid_view']
             
             # Calculate the complete safety distance map once
-            safety_map = _calculate_safety_distance_map(grid_view_unstacked)
+            safety_map = _calculate_safety_distance_map(grid_view)
 
             # Previous position is the center of the view
             prev_view_y, prev_view_x = 5, 5
@@ -303,14 +300,11 @@ def calculate_reward(previous_frame: Frame, current_frame: Frame, previous_actio
     # exact same grid_view that the agent used to make its decision.
     if previous_action in [0, 1, 2, 3] and not collided_with_wall:
         # 1. Get the gradient map that the agent saw
-        # The passed `previous_processed_obs` is the stacked observation.
-        # We need the most recent half, which is the second part.
-        prev_grid_view = previous_processed_obs['grid_view']
-        gradient_map = prev_grid_view[11:, :, :] # Get channels 11-21
+        gradient_map = previous_processed_obs['grid_view']
 
         # 2. Find the best direction from the center (player's position)
         center_y, center_x = 5, 5
-        current_gradient = gradient_map[10, center_y, center_x] # Channel 10 of the unstacked view
+        current_gradient = gradient_map[10, center_y, center_x] # Channel 10
         
         best_direction = None
         max_gradient = current_gradient

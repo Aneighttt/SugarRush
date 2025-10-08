@@ -28,9 +28,9 @@ class BomberEnv(gym.Env):
 
         self.action_space = spaces.Discrete(6)
         self.observation_space = spaces.Dict({
-            "grid_view": spaces.Box(low=0, high=1, shape=(11 * 2, 11, 11), dtype=np.float32),
-            "pixel_view": spaces.Box(low=0, high=1, shape=(3 * 2, 100, 100), dtype=np.float32),
-            "player_state": spaces.Box(low=0, high=1, shape=(5 * 2,), dtype=np.float32)
+            "grid_view": spaces.Box(low=0, high=1, shape=(11, 11, 11), dtype=np.float32),
+            "pixel_view": spaces.Box(low=0, high=1, shape=(3, 100, 100), dtype=np.float32),
+            "player_state": spaces.Box(low=0, high=1, shape=(5,), dtype=np.float32)
         })
 
         self.frame_queue = queue.Queue(maxsize=1000)
@@ -90,6 +90,12 @@ class BomberEnv(gym.Env):
         return next_obs, total_reward, terminated, truncated,  {"real_action": real_action, "reward_dict": full_reward_dict}
 
     def put_frame_pair(self, obs, next_obs, raw_obs, next_raw_obs, real_action):
+        # This method now receives the full transition for a single step.
+        # obs: P_T-1
+        # next_obs: P_T
+        # raw_obs: Raw T-1
+        # next_raw_obs: Raw T
+        # real_action: A_T-1
         self.frame_queue.put((obs, next_obs, raw_obs, next_raw_obs, real_action))
 
     def close(self):

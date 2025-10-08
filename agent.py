@@ -67,41 +67,26 @@ class SB3_DQNAgent:
     def load(self, path, load_replay_buffer=True, fine_tuning=False):
         """
         Loads a pre-trained model and optionally its replay buffer.
-
-        Args:
-            path (str): The path to the model file.
-            load_replay_buffer (bool): Whether to load the replay buffer.
-            fine_tuning (bool): If True, resets exploration rate for fine-tuning.
+        Since we are now using a single-frame input, the observation space has changed.
+        Loading old models might require careful handling or retraining.
         """
-        # Define the model parameters, ensuring consistency with __init__
-        custom_objects = {
-            "learning_rate": lambda p: 0.0001 + (0.001 - 0.0001) * p,  # Linear decay from 0.001 to 0.0001
-            "buffer_size": 20000,
-            "learning_starts": 2000,
-            "batch_size": 64,
-            "gamma": 0.95,
-            "train_freq": (1, "step"),
-            "gradient_steps": 1,
-            "target_update_interval": 1800,
-            "exploration_fraction": 0.1,
-            "exploration_final_eps": 0.1,
-            "exploration_initial_eps":1.0,
-            "replay_buffer_class": RealActionReplayBuffer,
-            "max_grad_norm": 10,
-        }
-
-        if fine_tuning:
-            # For fine-tuning, we load the model but override the exploration
-            # schedule to start from a low value.
-            print("--- Loading model for fine-tuning, resetting exploration rate. ---")
-            custom_objects["exploration_initial_eps"] = 0.1
+        # The custom_objects dictionary is largely unnecessary now, as most parameters
+        # are either saved with the model or consistent. We only need to handle
+        # fine-tuning specific adjustments.
         
         self.model = DQN.load(
             path, 
-            env=self.model.get_env(), 
-            custom_objects=custom_objects,
+            env=self.model.get_env(),
             device=self.model.device
         )
+
+        if fine_tuning:
+            # Reset the exploration schedule for fine-tuning
+            print("--- Loading model for fine-tuning, resetting exploration rate. ---")
+            self.model.exploration_initial_eps = 0.1
+            self.model.exploration_final_eps = 0.01 # Fine-tune to a lower final epsilon
+            # You might need to reset the learning rate schedule as well if it's not loaded correctly
+            # self.model.lr_schedule = lambda p: 0.0001 + (0.001 - 0.0001) * p
         
         if load_replay_buffer:
             replay_buffer_path = path.replace(".zip", "_replay_buffer.pkl")
