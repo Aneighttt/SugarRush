@@ -1,4 +1,5 @@
 import torch
+from torch import nn
 import numpy as np
 from stable_baselines3 import DQN
 from stable_baselines3.common.buffers import DictReplayBuffer

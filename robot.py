@@ -93,21 +93,18 @@ class SaveModelCallback(BaseCallback):
         if self.n_calls > 0 and self.n_calls % self.save_freq == 0:
             path = self.save_path
             if self.is_checkpoint:
-                # For checkpoints, create a file with the step number
-                dir_name = os.path.dirname(self.save_path)
-                path = os.path.join(dir_name, f"model_{self.num_timesteps}_steps.zip")
+                # For checkpoints, save directly into the run-specific directory
+                path = os.path.join(self.save_path, f"model_{self.num_timesteps}_steps.zip")
                 print(f"--- Saving model checkpoint to {path} ---")
             else:
                 print(f"--- Saving main model to {path} ---")
 
             with self.lock:
+                # For checkpoints, only save the model file, not the replay buffer.
                 self.model.save(path)
-                if self.is_checkpoint: # Only save replay buffer for checkpoints
-                    replay_buffer_path = path.replace(".zip", "_replay_buffer.pkl")
-                    self.model.save_replay_buffer(replay_buffer_path)
             
             if self.is_checkpoint:
-                print(f"--- Model and replay buffer checkpoint saved successfully. ---")
+                print(f"--- Model checkpoint saved successfully (model only). ---")
             else:
                 print(f"--- Main model saved successfully. ---")
         return True
@@ -123,12 +120,12 @@ class TrainLogCallback(BaseCallback):
         os.makedirs(self.log_dir, exist_ok=True)
         self.log_path = os.path.join(self.log_dir, "reward_log.csv")
         
-        # Define the header based on the keys in environment.py
+        # Define the header based on the keys in reward.py, ensuring it's up-to-date
         self.all_reward_keys = [
             'territory_diff', 'capture_tile', 'win', 'lose', 'stun', 'item_collect',
-            'bomb_strategy', 'not_moving', 'do_nothing', 'living_penalty',
-            'move_towards_frontier', 'enter_danger_zone', 'exit_danger_zone',
-            'staying_in_danger', 'move_towards_safety', 'follow_gradient_direction'
+            'bomb_strategy', 'bomb_limit_penalty', 'move_reward', 'not_moving', 
+            'do_nothing', 'living_penalty', 'enter_danger_zone', 'exit_danger_zone',
+            'staying_in_danger', 'moved_closer_to_safety', 'follow_gradient_path'
         ]
         header = "step," + ",".join(self.all_reward_keys) + ",total_reward\n"
         

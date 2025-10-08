@@ -4,7 +4,7 @@
 import numpy as np
 from data_models import Frame
 from config import *
-from utils import visualize_gradient_in_terminal
+from utils import visualize_gradient_in_terminal, find_path_to_nearest_frontier
 import collections
 
 ## pixel_view 
@@ -52,6 +52,12 @@ def create_pixel_view(frame: Frame, grid_view: np.ndarray) -> np.ndarray:
     pixel_view = np.zeros((PIXEL_CHANNELS, PIXEL_VIEW_SIZE, PIXEL_VIEW_SIZE), dtype=np.float32)
     pixel_view[0] = grid_view[0, view_gy_arr, view_gx_arr]
     pixel_view[1] = grid_view[2, view_gy_arr, view_gx_arr]
+
+    # 7. Add the third channel for the player's own position
+    # The player occupies the central 50x50 area of the 100x100 pixel view.
+    center_start = PIXEL_VIEW_SIZE // 2 - PIXEL_PER_CELL // 2
+    center_end = PIXEL_VIEW_SIZE // 2 + PIXEL_PER_CELL // 2
+    pixel_view[2, center_start:center_end, center_start:center_end] = 1.0
                     
     return pixel_view
 
@@ -190,63 +196,15 @@ def create_grid_view(frame: Frame) -> np.ndarray:
                 elif cell.ownership == 'N':
                     grid_view[9, view_y, view_x] = 1.0  # non occupied
 
-    # Channel 10: Gradient field based on the player's described BFS algorithm.
+    # Channel 10: Gradient field based on the path to the nearest frontier.
+    reconstructed_path, target = find_path_to_nearest_frontier(frame)
     
-    # 1. Create full-map representations from the frame data.
-    full_map_walkable = np.ones((MAP_HEIGHT, MAP_WIDTH), dtype=bool)
-    full_map_self_occupied = np.zeros((MAP_HEIGHT, MAP_WIDTH), dtype=bool)
-    for r in range(MAP_HEIGHT):
-        for c in range(MAP_WIDTH):
-            cell = frame.map[r][c]
-            if cell.terrain in ['I', 'N', 'D']:
-                full_map_walkable[r, c] = False
-            if cell.ownership == frame.my_player.team:
-                full_map_self_occupied[r, c] = True
-                       
-    player_grid_x, player_grid_y = pixels_to_grid(frame.my_player.position.x, frame.my_player.position.y)
-
-    # 2. Find the shortest path from the player to the first non-self-occupied tile.
-    q = collections.deque([(player_grid_y, player_grid_x)])
-    visited = set([(player_grid_y, player_grid_x)])
-    path = {}
-    target = None
-
-   
-    found_target = False
-    while q:
-        r, c = q.popleft()
-        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
-        for dr, dc in directions:
-            nr, nc = r + dr, c + dc
-
-            if 0 <= nr < MAP_HEIGHT and 0 <= nc < MAP_WIDTH and (nr, nc) not in visited and full_map_walkable[nr, nc]:
-                visited.add((nr, nc))
-                path[(nr, nc)] = (r, c)
-                q.append((nr, nc))
-                if not full_map_self_occupied[nr, nc]:
-                    target = (nr, nc)
-                    found_target = True
-                    break
-        if found_target:
-            break
-
-    # 3. If a path is found, create the gradient.
     full_gradient_map = np.full((MAP_HEIGHT, MAP_WIDTH), -1.0, dtype=np.float32)
     if target:
-        # Reconstruct the path from target to player
-        reconstructed_path = []
-        curr = target
-        while curr in path:
-            reconstructed_path.append(curr)
-            curr = path[curr]
-        reconstructed_path.append((player_grid_y, player_grid_x))
-        reconstructed_path.reverse()
-
-        # Fill the gradient map along the path
         path_len = len(reconstructed_path)
         if path_len > 1:
             for i, (r, c) in enumerate(reconstructed_path):
-                # The gradient now starts at 1.0 at the target and decreases towards the player.
+                # The gradient starts at 1.0 at the target and decreases towards the player.
                 gradient_value = 1.0 - ((path_len - 1 - i) / (path_len - 1))
                 full_gradient_map[r, c] = gradient_value
         elif path_len == 1:

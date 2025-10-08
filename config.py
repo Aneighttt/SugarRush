@@ -21,7 +21,7 @@ PLAYER_STATE_SIZE = 5
 PIXEL_PER_CELL = 50
 # --- Pixel View Configuration ---
 PIXEL_VIEW_SIZE = 100
-PIXEL_CHANNELS = 2 # 0: Terrain, 1: Danger Zone
+PIXEL_CHANNELS = 3 # 0: Terrain, 1: Danger Zone, 2: Self Position
 
 # --- Normalization Constants ---
 # These values are used to scale player stats to a [0, 1] range.

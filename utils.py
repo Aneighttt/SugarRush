@@ -39,6 +39,61 @@ def calculate_distance_map_to_frontier(frame: Frame):
     
     return dist_map
 
+
+def find_path_to_nearest_frontier(frame: Frame):
+    """
+    Finds the shortest path from the player to the single nearest non-friendly tile
+    using a BFS starting from the player's position.
+    Returns the reconstructed path and the target coordinates.
+    """
+    player_pos = frame.my_player.position
+    player_grid_x, player_grid_y = player_pos.x // PIXEL_PER_CELL, player_pos.y // PIXEL_PER_CELL
+
+    # --- Pre-compute walkable and self-occupied maps ---
+    full_map_walkable = np.ones((MAP_HEIGHT, MAP_WIDTH), dtype=bool)
+    full_map_self_occupied = np.zeros((MAP_HEIGHT, MAP_WIDTH), dtype=bool)
+    for r in range(MAP_HEIGHT):
+        for c in range(MAP_WIDTH):
+            cell = frame.map[r][c]
+            if cell.terrain in ['I', 'N', 'D']:
+                full_map_walkable[r, c] = False
+            if cell.ownership == frame.my_player.team:
+                full_map_self_occupied[r, c] = True
+
+    # --- BFS to find the nearest target ---
+    q = collections.deque([(player_grid_y, player_grid_x, 0)])
+    visited = set([(player_grid_y, player_grid_x)])
+    path_parents = {}
+    target = None
+
+    while q:
+        r, c, dist = q.popleft()
+
+        if not full_map_self_occupied[r, c]:
+            target = (r, c)
+            break
+
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+
+            if 0 <= nr < MAP_HEIGHT and 0 <= nc < MAP_WIDTH and (nr, nc) not in visited and full_map_walkable[nr, nc]:
+                visited.add((nr, nc))
+                path_parents[(nr, nc)] = (r, c)
+                q.append((nr, nc, dist + 1))
+
+    # --- Reconstruct path if a target was found ---
+    reconstructed_path = []
+    if target:
+        curr = target
+        while curr in path_parents:
+            reconstructed_path.append(curr)
+            curr = path_parents[curr]
+        reconstructed_path.append((player_grid_y, player_grid_x))
+        reconstructed_path.reverse()
+
+    return reconstructed_path, target
+
+
 def get_color_escape(r, g, b, background=False):
     """Returns the ANSI escape code for a given RGB color."""
     return f'\033[{"48" if background else "38"};2;{r};{g};{b}m'

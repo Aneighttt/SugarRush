@@ -1,8 +1,8 @@
 from data_models import Frame
 from config import *
 import collections
-from utils import calculate_distance_map_to_frontier
-
+from utils import calculate_distance_map_to_frontier, find_path_to_nearest_frontier
+import numpy as np
 def count_territory(frame: Frame):
     my_territory = 0
     enemy_territory = 0
@@ -34,97 +34,63 @@ def get_occupied_grids_from_position(pixel_pos):
                 occupied.add((gx, gy))
     return list(occupied)
 
-def _get_explosion_grids(bomb, frame: Frame):
-    explosion_grids = set()
-    bomb_x, bomb_y = bomb.position.x, bomb.position.y
+
+
+def _calculate_safety_distance_map(grid_view):
+    """
+    Calculates a distance map where each cell's value is the shortest distance
+    to the nearest safe zone using a multi-source BFS.
+    """
+    danger_map = grid_view[2, :, :]
+    terrain_map = grid_view[0, :, :]
     
-    explosion_grids.add((bomb_x, bomb_y))
+    # Initialize distances with a large value
+    distance_map = np.full((VIEW_SIZE, VIEW_SIZE), 99, dtype=np.int32)
+    q = collections.deque()
 
-    for i in range(1, bomb.range + 1):
-        x = bomb_x + i
-        if not (0 <= x < MAP_WIDTH): break
-        explosion_grids.add((x, bomb_y))
-        if frame.map[bomb_y][x].terrain in ['I', 'N', 'D']: break
-    for i in range(1, bomb.range + 1):
-        x = bomb_x - i
-        if not (0 <= x < MAP_WIDTH): break
-        explosion_grids.add((x, bomb_y))
-        if frame.map[bomb_y][x].terrain in ['I', 'N', 'D']: break
-    for i in range(1, bomb.range + 1):
-        y = bomb_y + i
-        if not (0 <= y < MAP_HEIGHT): break
-        explosion_grids.add((bomb_x, y))
-        if frame.map[y][bomb_x].terrain in ['I', 'N', 'D']: break
-    for i in range(1, bomb.range + 1):
-        y = bomb_y - i
-        if not (0 <= y < MAP_HEIGHT): break
-        explosion_grids.add((bomb_x, y))
-        if frame.map[y][bomb_x].terrain in ['I', 'N', 'D']: break
-    #print(bomb_x,bomb_y,explosion_grids)  
-    return explosion_grids
+    # Find all safe zones (sources for the BFS)
+    for y in range(VIEW_SIZE):
+        for x in range(VIEW_SIZE):
+            if danger_map[y, x] == 0 and terrain_map[y, x] != 1.0:
+                distance_map[y, x] = 0
+                q.append((x, y))
 
-def get_danger_zones(frame: Frame):
-    danger_zones = set()
-    for bomb in frame.bombs:
-        danger_zones.update(_get_explosion_grids(bomb, frame))
-    return danger_zones
-
-
-def _find_nearest_safe_tile_coords(start_gx, start_gy, danger_zones, max_dist=100):
-    """
-    Finds the coordinates of the nearest tile not in the danger_zones using BFS.
-    """
-    q = collections.deque([(start_gx, start_gy, 0)])
-    visited = set([(start_gx, start_gy)])
-
-    if (start_gx, start_gy) not in danger_zones:
-        return (start_gx, start_gy)
-
+    # Perform multi-source BFS
     while q:
-        x, y, dist = q.popleft()
-
-        if dist >= max_dist:
-            continue
+        x, y = q.popleft()
+        dist = distance_map[y, x]
 
         for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
             nx, ny = x + dx, y + dy
 
-            if 0 <= nx < MAP_WIDTH and 0 <= ny < MAP_HEIGHT and (nx, ny) not in visited:
-                if (nx, ny) not in danger_zones:
-                    return (nx, ny)
-                visited.add((nx, ny))
-                q.append((nx, ny, dist + 1))
+            if 0 <= ny < VIEW_SIZE and 0 <= nx < VIEW_SIZE:
+                # If the neighbor is reachable and has not been visited yet
+                if terrain_map[ny, nx] != 1.0 and distance_map[ny, nx] == 99:
+                    distance_map[ny, nx] = dist + 1
+                    q.append((nx, ny))
     
-    return None
+    return distance_map
 
 
-def _find_nearest_unclaimed_tile_coords(frame: Frame, start_gx: int, start_gy: int):
-    """
-    Finds the coordinates of the nearest tile not owned by the player's team using BFS.
-    Returns None if all tiles are owned.
-    """
-    my_team_id = frame.my_player.team
-    q = [(start_gx, start_gy)]
-    visited = set(q)
+def _get_explosion_grids(bomb, frame):
+    """Helper to calculate explosion grids for a bomb."""
+    grids = set()
+    # Add the bomb's own grid
+    grids.add((bomb.position.x, bomb.position.y))
+    # Calculate explosion in 4 directions
+    for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        for i in range(1, bomb.range + 1):
+            nx, ny = bomb.position.x + dx * i, bomb.position.y + dy * i
+            if not (0 <= ny < MAP_HEIGHT and 0 <= nx < MAP_WIDTH):
+                break
+            grids.add((nx, ny))
+            # Stop explosion path if it hits a wall
+            if frame.map[ny][nx].terrain in ['I', 'N', 'D']:
+                break
+    return grids
 
-    head = 0
-    while head < len(q):
-        x, y = q[head]
-        head += 1
 
-        if frame.map[y][x].ownership != my_team_id:
-            return (x, y)
-
-        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-            nx, ny = x + dx, y + dy
-            if 0 <= nx < MAP_WIDTH and 0 <= ny < MAP_HEIGHT and (nx, ny) not in visited:
-                visited.add((nx, ny))
-                q.append((nx, ny))
-    
-    return None
-
-3
-def calculate_reward(previous_frame: Frame, current_frame: Frame, previous_action: int):
+def calculate_reward(previous_frame: Frame, current_frame: Frame, previous_action: int, previous_processed_obs: dict):
     rewards = {}
 
     # --- 1. Territory difference ---
@@ -190,38 +156,43 @@ def calculate_reward(previous_frame: Frame, current_frame: Frame, previous_actio
             temp_bomb = collections.namedtuple('Bomb', ['position', 'range'])
             temp_bomb.position = collections.namedtuple('Position', ['x', 'y'])(bomb_pos_x, bomb_pos_y)
             temp_bomb.range = int(bomb_range)
-
-            # CRITICAL: Explosion area and evaluation must be based on the state when the bomb was placed (previous_frame)
-            explosion_area = _get_explosion_grids(temp_bomb, previous_frame)
-
+            
             # Get enemy positions from the previous frame
             enemy_grids = set()
             for p in previous_frame.other_players:
                 if p.team != player.team:
                     enemy_grids.update(get_occupied_grids_from_position(p.position))
 
-            # Evaluate the bomb's strategic value
-            for x, y in explosion_area:
-                if previous_frame.map[y][x].terrain == 'D':
-                    strategic_value += 0.16  # Clipped to [-1, 1] range
-                    has_valid_target = True
-                if (x, y) in enemy_grids:
-                    strategic_value += 0.4  # Clipped to [-1, 1] range
-                    has_valid_target = True
-            
-            # Penalize useless bombs
-            if not has_valid_target:
-                strategic_value -= 0.3 # Clipped to [-1, 1] range
+            # --- Final, Strict Strategic Bombing Reward ---
+            is_strategic = False
 
-            # Reward for placing a bomb and having a safe escape route
-            player_grids_after_move = set(get_occupied_grids_from_position(current_frame.my_player.position))
-            if not player_grids_after_move.isdisjoint(explosion_area): # If player is still in danger
-                safe_tile = _find_nearest_safe_tile_coords(bomb_pos_x, bomb_pos_y, explosion_area)
-                if safe_tile:
-                    strategic_value += 0.1 # Clipped to [-1, 1] range
+            # Rule 1: Check for destructible walls immediately adjacent to the PLAYER
+            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nx, ny = bomb_pos_x + dx, bomb_pos_y + dy
+                if (0 <= ny < MAP_HEIGHT and 0 <= nx < MAP_WIDTH and
+                        previous_frame.map[ny][nx].terrain == 'D'):
+                    is_strategic = True
+                    break
             
-            if strategic_value != 0:
-                rewards['bomb_strategy'] = strategic_value
+            # Rule 2: Check for any enemy "nearby" (e.g., within a 5x5 box)
+            if not is_strategic:
+                nearby_range = 2
+                for p in previous_frame.other_players:
+                    if p.team != player.team:
+                        enemy_gx = p.position.x // PIXEL_PER_CELL
+                        enemy_gy = p.position.y // PIXEL_PER_CELL
+                        if (abs(bomb_pos_x - enemy_gx) <= nearby_range and
+                                abs(bomb_pos_y - enemy_gy) <= nearby_range):
+                            is_strategic = True
+                            break
+            
+            if is_strategic:
+                rewards['bomb_strategy'] = 0.5
+            else:
+                # This penalty must be extremely severe to make "reward farming" by
+                # placing useless bombs and then dodging them an unprofitable strategy.
+                # It must outweigh the sum of all potential future rewards from dodging.
+                rewards['bomb_strategy'] = -2.0
         else:
             # Penalize trying to place a bomb when at max capacity
             rewards['bomb_limit_penalty'] = -1.0
@@ -233,11 +204,13 @@ def calculate_reward(previous_frame: Frame, current_frame: Frame, previous_actio
         if current_frame.my_player.position != previous_frame.my_player.position:
             rewards['move_reward'] = 0.02  # Clipped to [-1, 1] range
         else:
-            rewards['not_moving'] = -0.7 # Clipped to [-1, 1] range
+            # A moderate penalty for bumping into walls.
+            rewards['not_moving'] = -0.3 # Clipped to [-1, 1] range
             collided_with_wall = True
     # --- 8. Penalty for doing nothing ---i bu
     if previous_action == 5:
-        rewards['do_nothing'] = -0.2
+        # A gentle nudge to prevent the agent from being passive.
+        rewards['do_nothing'] = -0.1
 
     # --- 9. Living penalty ---
     rewards['living_penalty'] = -0.001
@@ -250,80 +223,111 @@ def calculate_reward(previous_frame: Frame, current_frame: Frame, previous_actio
     #     ... (code removed) ...
 
     # --- 11. Reward/Penalty for Entering/Exiting Danger Zone ---
-    danger_zones = get_danger_zones(previous_frame)
-    
+    # Use the pre-calculated danger map from the agent's observation
+    # The passed `previous_processed_obs` is the stacked observation.
+    # We need the most recent half, which is the second part.
+    prev_grid_view = previous_processed_obs['grid_view']
+    danger_map = prev_grid_view[11 + 2, :, :] # Channel 2 of the most recent unstacked view
+
     prev_player_grids = set(get_occupied_grids_from_position(previous_frame.my_player.position))
     curr_player_grids = set(get_occupied_grids_from_position(current_frame.my_player.position))
     
-    was_in_danger = not prev_player_grids.isdisjoint(danger_zones)
-    is_in_danger = not curr_player_grids.isdisjoint(danger_zones)
+    # Check the danger level at the player's current and previous grid positions
+    # by sampling from the 11x11 danger_map centered on the player.
+    center_y, center_x = 5, 5
+    
+    # Note: Since get_occupied_grids_from_position is complex, we simplify by just checking the center.
+    # This is a reasonable approximation.
+    prev_danger_val = danger_map[center_y, center_x]
+    
+    # We need to calculate the current danger value based on the *new* frame,
+    # but using the *old* bomb locations for consistency.
+    # A simpler way is to check the danger map at the new relative position.
+    curr_pos = current_frame.my_player.position
+    prev_pos = previous_frame.my_player.position
+    dx = (curr_pos.x - prev_pos.x) // PIXEL_PER_CELL
+    dy = (curr_pos.y - prev_pos.y) // PIXEL_PER_CELL
+    
+    curr_view_x, curr_view_y = center_x + dx, center_y + dy
+    curr_danger_val = 0
+    if 0 <= curr_view_y < VIEW_SIZE and 0 <= curr_view_x < VIEW_SIZE:
+        curr_danger_val = danger_map[curr_view_y, curr_view_x]
+
+    was_in_danger = prev_danger_val > 0
+    is_in_danger = curr_danger_val > 0
 
     if not was_in_danger and is_in_danger:
-        rewards['enter_danger_zone'] = -0.6  # Clipped to [-1, 1] range
+        rewards['enter_danger_zone'] = -0.6
     elif was_in_danger and not is_in_danger:
-        rewards['exit_danger_zone'] = 0.8   # Clipped to [-1, 1] range
+        rewards['exit_danger_zone'] = 0.8
 
     # --- 12. Continuous Penalty for Staying in Danger Zone ---
     if is_in_danger:
-        rewards['staying_in_danger'] = -0.7 # Clipped to [-1, 1] range, must be > capture_tile
+        # Dynamic penalty based on the danger level
+        # Cast to float for type consistency in the reward dictionary
+        rewards['staying_in_danger'] = float(-0.7 * curr_danger_val)
 
-        # --- 13. Reward for Moving Towards Safety (when in danger) ---
-        if previous_action in [0, 1, 2, 3]: # Only if the agent tried to move
-            prev_pos = previous_frame.my_player.position
-            prev_gx, prev_gy = prev_pos.x // PIXEL_PER_CELL, prev_pos.y // PIXEL_PER_CELL
+        # --- 13. Reward for Moving Closer to a Safe Zone ---
+        # This reward is critical. It solves the "U-turn" problem where the agent might
+        # need to move through another dangerous square to reach the nearest safe exit.
+        # It rewards any move that demonstrably reduces the distance to safety.
+        if previous_action in [0, 1, 2, 3]: # If the agent tried to move
+            # Use the observation the agent made its decision on
+            grid_view_unstacked = previous_processed_obs['grid_view'][11:, :, :]
             
-            curr_pos = current_frame.my_player.position
-            curr_gx, curr_gy = curr_pos.x // PIXEL_PER_CELL, curr_pos.y // PIXEL_PER_CELL
+            # Calculate the complete safety distance map once
+            safety_map = _calculate_safety_distance_map(grid_view_unstacked)
 
-            # Find the nearest safe tile from the previous position
-            target_coords = _find_nearest_safe_tile_coords(prev_gx, prev_gy, danger_zones)
+            # Previous position is the center of the view
+            prev_view_y, prev_view_x = 5, 5
+            dist_prev = safety_map[prev_view_y, prev_view_x]
+
+            # Current position is offset from the center
+            move_map = {0: (-1, 0), 1: (1, 0), 2: (0, -1), 3: (0, 1)} # U, D, L, R
+            dy, dx = move_map[previous_action]
+            curr_view_y, curr_view_x = prev_view_y + dy, prev_view_x + dx
             
-            if target_coords:
-                target_sx, target_sy = target_coords
-                dist_before = abs(prev_gx - target_sx) + abs(prev_gy - target_sy)
-                dist_after = abs(curr_gx - target_sx) + abs(curr_gy - target_sy)
+            # Ensure the new position is within the view before looking up the distance
+            if 0 <= curr_view_y < VIEW_SIZE and 0 <= curr_view_x < VIEW_SIZE:
+                dist_curr = safety_map[curr_view_y, curr_view_x]
+                
+                if dist_curr < dist_prev:
+                    # This reward is set to 0.7 to perfectly counteract the maximum possible
+                    # `staying_in_danger` penalty (-0.7 * 1.0), sending a clear signal
+                    # that moving closer to safety is the correct action that neutralizes
+                    # the immediate penalty of being in a dangerous spot.
+                    rewards['moved_closer_to_safety'] = 0.8
 
-                if dist_after < dist_before:
-                    rewards['move_towards_safety'] = 0.8 # Clipped to [-1, 1] range, must be > staying_in_danger
+    # --- 14. Reward for Moving Along the Shortest Path Gradient ---
+    # This reward is now perfectly aligned with the observation, as it uses the
+    # exact same grid_view that the agent used to make its decision.
+    if previous_action in [0, 1, 2, 3] and not collided_with_wall:
+        # 1. Get the gradient map that the agent saw
+        # The passed `previous_processed_obs` is the stacked observation.
+        # We need the most recent half, which is the second part.
+        prev_grid_view = previous_processed_obs['grid_view']
+        gradient_map = prev_grid_view[11:, :, :] # Get channels 11-21
 
-    # --- 14. Reward for Moving in the Direction of the Gradient ---
-    # This rewards the agent for moving in the general direction of the gradient,
-    # based on pixel-level movement vectors.
-    if previous_action in [0, 1, 2, 3] and not collided_with_wall and hasattr(previous_frame, 'distance_map'):
-        dist_map = previous_frame.distance_map
-        prev_pos = previous_frame.my_player.position
-        prev_gx, prev_gy = prev_pos.x // PIXEL_PER_CELL, prev_pos.y // PIXEL_PER_CELL
+        # 2. Find the best direction from the center (player's position)
+        center_y, center_x = 5, 5
+        current_gradient = gradient_map[10, center_y, center_x] # Channel 10 of the unstacked view
+        
+        best_direction = None
+        max_gradient = current_gradient
 
-        # 1. Find the best neighboring grid cell (lowest distance on the map)
-        best_neighbor_dist = dist_map[prev_gy, prev_gx]
-        best_neighbor_coords = None
-        if best_neighbor_dist == -1: # Player is not on a valid path
-            return rewards
+        # Check neighbors in the 11x11 view
+        for action, (dy, dx) in enumerate([( -1, 0), (1, 0), (0, -1), (0, 1)]): # U, D, L, R
+            ny, nx = center_y + dy, center_x + dx
+            
+            neighbor_gradient = gradient_map[10, ny, nx]
+            if neighbor_gradient > max_gradient:
+                max_gradient = neighbor_gradient
+                best_direction = action
 
-        for dx, dy in [(0, -1), (0, 1), (-1, 0), (1, 0)]: # U, D, L, R
-            nx, ny = prev_gx + dx, prev_gy + dy
-            if 0 <= nx < MAP_WIDTH and 0 <= ny < MAP_HEIGHT:
-                neighbor_dist = dist_map[ny, nx]
-                if neighbor_dist != -1 and neighbor_dist < best_neighbor_dist:
-                    best_neighbor_dist = neighbor_dist
-                    best_neighbor_coords = (nx, ny)
-
-        # 2. If a better neighbor exists, compare movement direction
-        if best_neighbor_coords:
-            # Ideal vector: from player's start pos to center of best neighbor cell
-            best_nx, best_ny = best_neighbor_coords
-            ideal_target_px_x = best_nx * PIXEL_PER_CELL + PIXEL_PER_CELL / 2
-            ideal_target_px_y = best_ny * PIXEL_PER_CELL + PIXEL_PER_CELL / 2
-            ideal_vec = (ideal_target_px_x - prev_pos.x, ideal_target_px_y - prev_pos.y)
-
-            # Actual movement vector
-            curr_pos = current_frame.my_player.position
-            actual_vec = (curr_pos.x - prev_pos.x, curr_pos.y - prev_pos.y)
-
-            # 3. Use dot product to check if vectors are in the same general direction
-            dot_product = ideal_vec[0] * actual_vec[0] + ideal_vec[1] * actual_vec[1]
-
-            if dot_product > 0:
-                rewards['follow_gradient_direction'] = 0.08
+        # 3. Reward if the chosen action matches the best direction
+        if best_direction is not None and previous_action == best_direction:
+            # This reward is increased to make exploration and territory capture
+            # a more attractive strategy compared to passive or overly safe behavior.
+            rewards['follow_gradient_path'] = 0.4
 
     return rewards
