@@ -26,11 +26,17 @@ class BomberEnv(gym.Env):
     def __init__(self):
         super(BomberEnv, self).__init__()
 
-        self.action_space = spaces.Discrete(6)
+        # 新的动作空间：MultiDiscrete [方向(5), 放炸弹(2), 速度(5)]
+        # 方向: 0=不动, 1=上, 2=下, 3=左, 4=右
+        # 放炸弹: 0=不放, 1=放
+        # 速度: 0=最大(16), 1=极慢(2), 2=慢(4), 3=中(8), 4=快(12)
+        self.action_space = spaces.MultiDiscrete([5, 2, 5])
+        
+        # grid_view shape: (channels, height, width) = (14, 16, 28)
+        # 地图是28宽x16高，numpy中是(height, width)
         self.observation_space = spaces.Dict({
-            "grid_view": spaces.Box(low=0, high=1, shape=(11, 11, 11), dtype=np.float32),
-            "pixel_view": spaces.Box(low=0, high=1, shape=(3, 100, 100), dtype=np.float32),
-            "player_state": spaces.Box(low=0, high=1, shape=(5,), dtype=np.float32)
+            "grid_view": spaces.Box(low=0, high=1, shape=(14, 16, 28), dtype=np.float32),
+            "player_state": spaces.Box(low=0, high=1, shape=(10,), dtype=np.float32)  # 更新为10维
         })
 
         self.frame_queue = queue.Queue(maxsize=1000)
